@@ -1,0 +1,26 @@
+minimum_cumulusci_version: '2.5.8'
+project:
+    name: core-sfdo-performance-tests
+    package:
+        name:  core-sfdo-performance-tests
+        api_version: '46.0'
+
+tasks: 
+    test_performance:
+        description: Runs Robot Framework performance tests for basic SObjects
+        class_path: cumulusci.tasks.robotframework.Robot
+        group: Performance Tests
+
+flows:
+    test_performance_scratch:
+        steps:
+            1: 
+                task: test_performance
+                options:
+                    suites: robot/core-sfdo-performance-tests
+
+    test_performance_LDV:
+            1: 
+                task: test_performance
+                options:
+                    suites: robot/core-sfdo-performance-tests
