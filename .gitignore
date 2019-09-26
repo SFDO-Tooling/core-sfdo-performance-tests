@@ -10,6 +10,9 @@ __pycache__
 
 # Robot Framework results
 robot/core-sfdo-performance-tests/results/
+log.html
+output.xml
+report.html
 
 # Editors
 *.sublime-project
