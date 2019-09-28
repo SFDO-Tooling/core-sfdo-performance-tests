@@ -4,7 +4,7 @@ Documentation   Tests of collections of records based on Jess Lopez's recommenda
 Library         DateTime
 Resource        cumulusci/robotframework/Salesforce.robot
 # Suite Teardown  Delete Session Records
-Force Tags      api200
+Force Tags      api200      performance
 
 *** Keywords ***
 Insert 200 Contacts
