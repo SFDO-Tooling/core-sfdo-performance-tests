@@ -9,7 +9,6 @@ Force Tags      api200      performance
 *** Keywords ***
 Insert 200 Contacts
     [Documentation]  Create 200 Contacts in CONTACTS suite variable
-    [Setup]     Foo bar
     @{objects}=  Generate Test Data  Contact  200  
         ...  FirstName=User {{number}}
         ...  LastName={{fake.last_name}}

@@ -1,2 +1,0 @@
-This is an attempt to reproduce an issue where MetaCI
-does not capture a log file for a broken test setup.
