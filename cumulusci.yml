@@ -23,16 +23,18 @@ tasks:
 flows:
     demo_snowscaler:
         steps:
-            # 1:
-            #     task: disable_duplicate_rules
+            1:
+                task: disable_duplicate_rules
 
             2:
                 task: snowfakery
                 options:
-                    num_records: 2_700_000
+                    num_records: 30_000
                     recipe: datasets/basic-salesforce.recipe.yml
                     num_records_tablename: Opportunity
-                    unified_logging: True  
+                    unified_logging: True
+                    # num_generator_workers: 0
+                    # num_uploader_workers: 0
 
     test_performance_scratch:
         steps:

@@ -3,11 +3,11 @@ import time
 import typing as T
 
 from pathlib import Path
-from multiprocessing import Process, Value
+import multiprocessing
+import threading
 from tempfile import mkdtemp
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stdout, redirect_stderr, nullcontext
 from dataclasses import dataclass
-
 
 from sqlalchemy import MetaData, create_engine
 
@@ -21,6 +21,12 @@ from cumulusci.core.config import TaskConfig
 from cumulusci.cli.logger import init_logger
 
 bulkgen_task = "cumulusci.tasks.bulkdata.generate_from_yaml.GenerateDataFromYaml"
+
+
+# # switch to using spawn everywhere.
+# # on MetaCI this helps us refresh database and other connections
+# # Also may be generally more consistent behaviour across platforms
+# multiprocessing = get_context('spawn')
 
 
 @dataclass
@@ -103,7 +109,7 @@ class UploadStatus:
                 "rows_finished",
                 "wait_for_org_to_catch_up",
             ]
-        return "\n" + "\n".join(f"{a}: {getattr(self, a)}" for a in keys if not a[0] == "_")
+        return "\n" + "\n".join(f"{a.replace('_', ' ').title()}: {getattr(self, a)}" for a in keys if not a[0] == "_")
 
 
 class Snowfakery(BaseSalesforceApiTask):
@@ -143,7 +149,7 @@ class Snowfakery(BaseSalesforceApiTask):
         self.unified_logging = self.options.get("unified_logging")
 
     def _run_task(self):
-        self._done = Value("i", False)
+        self._done = multiprocessing.Value("i", False)
         self.max_batch_size = self.options.get("max_batch_size", 250_000)
         self.recipe = Path(self.options.get("recipe"))
         self.job_counter = 1
@@ -209,6 +215,7 @@ class Snowfakery(BaseSalesforceApiTask):
             self.logger.info(f"Upload Workers: {len(upload_workers)}")
             self.logger.info(f"Queue size: {upload_status.upload_queue_backlog}")
             self.logger.info(f"Working Directory: {tempdir}")
+
             time.sleep(3)
             upload_status = self.generate_upload_status()
 
@@ -230,7 +237,7 @@ class Snowfakery(BaseSalesforceApiTask):
             jobs_to_be_done = jobs_to_be_done[0:free_workers]
             for job in jobs_to_be_done:
                 working_directory = shutil.move(str(job), str(self.loaders_path))
-                process = Process(target=self._load_process, args=[working_directory])
+                process = threading.Thread(target=self._load_process, args=[working_directory])
                 # add an error trapping/reporting wrapper
                 process.start()
                 upload_workers.append(process)
@@ -252,7 +259,7 @@ class Snowfakery(BaseSalesforceApiTask):
                 template_path,
                 self.job_counter,
             ]
-            process = Process(target=self._do_generate, args=args)
+            process = threading.Thread(target=self._do_generate, args=args)
             # add an error trapping/reporting wrapper
             process.start()
 
@@ -278,7 +285,7 @@ class Snowfakery(BaseSalesforceApiTask):
             "continuation_file": f"{working_dir}/continuation.yml",
             "num_records_tablename": self.options.get("num_records_tablename"),
         }
-        self._invoke_subtask(GenerateDataFromYaml, options, working_dir)
+        self._invoke_subtask(GenerateDataFromYaml, options, working_dir, False)
         assert mapping_file.exists()
         shutil.move(str(working_dir), str(self.queue_for_loading_directory))
 
@@ -295,11 +302,12 @@ class Snowfakery(BaseSalesforceApiTask):
             "reset_oids": False,
             "database_url": database_url,
         }
-        self._invoke_subtask(LoadData, options, working_directory)
+        self._invoke_subtask(LoadData, options, working_directory, False)
         shutil.move(str(working_directory), str(self.finished_directory))
 
     def _invoke_subtask(
-        self, TaskClass: type, subtask_options: T.Mapping[str, T.Any], working_dir: Path
+        self, TaskClass: type, subtask_options: T.Mapping[str, T.Any], working_dir: Path,
+        redirect_logging: bool,
     ):
         subtask_config = TaskConfig({"options": subtask_options})
         subtask = TaskClass(
@@ -310,7 +318,14 @@ class Snowfakery(BaseSalesforceApiTask):
             name=self.name,
             stepnum=self.stepnum,
         )
-        with self._add_tempfile_logger(working_dir / f"{TaskClass.__name__}.log"):
+
+        if redirect_logging:
+            def logger():
+                return self._add_tempfile_logger(working_dir / f"{TaskClass.__name__}.log")
+        else:   # do nothing
+            logger = nullcontext
+
+        with logger():
             try:
                 subtask()
             except Exception as e:
@@ -385,7 +400,7 @@ class Snowfakery(BaseSalesforceApiTask):
 
     def _generate_and_load_batch(self, tempdir, options) -> Path:
         options = {**options, "working_directory": tempdir}
-        self._invoke_subtask(GenerateAndLoadDataFromYaml, options, tempdir)
+        self._invoke_subtask(GenerateAndLoadDataFromYaml, options, tempdir, False)
         generated_data = tempdir / "generated_data.db"
         assert generated_data.exists(), generated_data
         database_url = f"sqlite:///{generated_data}"
@@ -402,16 +417,6 @@ class Snowfakery(BaseSalesforceApiTask):
             with open(my_log, "w") as f:
                 with redirect_stdout(f), redirect_stderr(f), init_logger():
                     yield f
-                # handler = logging.StreamHandler(stream=f)
-                # handler.setLevel(logging.DEBUG)
-                # formatter = coloredlogs.ColoredFormatter(fmt="%(asctime)s: %(message)s")
-                # handler.setFormatter(formatter)
-
-                # rootLogger.addHandler(handler)
-                # try:
-                #     yield f
-                # finally:
-                #     rootLogger.removeHandler(handler)
 
     def _setup_engine(self, database_url):
         """Set up the database engine"""
