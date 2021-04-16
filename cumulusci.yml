@@ -1,27 +1,47 @@
-minimum_cumulusci_version: '2.5.8'
+minimum_cumulusci_version: "2.5.8"
 project:
     name: core-sfdo-performance-tests
     package:
-        name:  core-sfdo-performance-tests
-        api_version: '46.0'
+        name: core-sfdo-performance-tests
 
-tasks: 
+tasks:
     test_performance:
         description: Runs Robot Framework performance tests for basic SObjects
         class_path: cumulusci.tasks.robotframework.Robot
         group: Performance Tests
 
+    snowfakery:
+        class_path: tasks.snowscale.Snowfakery
+
+    disable_duplicate_rules:
+        class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
+        options:
+            active: False
+            api_names: "*"
+
+
 flows:
+    demo_snowscaler:
+        steps:
+            # 1:
+            #     task: disable_duplicate_rules
+
+            2:
+                task: snowfakery
+                options:
+                    num_records: 2_700_000
+                    recipe: datasets/basic-salesforce.recipe.yml
+                    num_records_tablename: Opportunity
+                    unified_logging: True  
+
     test_performance_scratch:
         steps:
-            3: 
-                task: test_performance
-                options:
-                    suites: robot/core-sfdo-performance-tests
+            1:
+                flow: demo_snowscaler
 
     test_performance_LDV:
         steps:
-            1: 
+            1:
                 task: test_performance
                 options:
                     suites: robot/core-sfdo-performance-tests
