@@ -103,7 +103,7 @@ class UploadStatus:
                 "rows_finished",
                 "wait_for_org_to_catch_up",
             ]
-        return "\n".join(f"{a}: {getattr(self, a)}" for a in keys if not a[0] == "_")
+        return "\n" + "\n".join(f"{a}: {getattr(self, a)}" for a in keys if not a[0] == "_")
 
 
 class Snowfakery(BaseSalesforceApiTask):
@@ -188,27 +188,27 @@ class Snowfakery(BaseSalesforceApiTask):
 
         # TODO: how can I ensure I'm making forward progress
         while not upload_status.done:
-            print(
+            self.logger.info(
                 "\n********** PROGRESS *********",
             )
-            print(upload_status._display(detailed=True))
+            self.logger.info(upload_status._display(detailed=True))
             upload_workers = self._spawn_transient_upload_workers(upload_workers)
             generator_workers = [
                 worker for worker in generator_workers if worker.is_alive()
             ]
 
             if upload_status.max_needed_generators_to_fill_queue == 0:
-                print("WAITING FOR UPLOAD QUEUE TO CATCH UP")
+                self.logger.info("WAITING FOR UPLOAD QUEUE TO CATCH UP")
                 self.delay_multiple *= 2
-                print(f"Batch size multiple={self.delay_multiple}")
+                self.logger.info(f"Batch size multiple={self.delay_multiple}")
             else:
                 generator_workers = self._spawn_transient_generator_workers(
                     generator_workers, upload_status, template_path
                 )
-            print("Generator Workers:", len(generator_workers))
-            print("Upload Workers:", len(upload_workers))
-            print("Queue size:", upload_status.upload_queue_backlog)
-            print("Working Directory:", tempdir)
+            self.logger.info(f"Generator Workers: {len(generator_workers)}")
+            self.logger.info(f"Upload Workers: {len(upload_workers)}")
+            self.logger.info(f"Queue size: {upload_status.upload_queue_backlog}")
+            self.logger.info(f"Working Directory: {tempdir}")
             time.sleep(3)
             upload_status = self.generate_upload_status()
 
@@ -217,7 +217,7 @@ class Snowfakery(BaseSalesforceApiTask):
         for worker in upload_workers:
             worker.join()
 
-        print(self.generate_upload_status()._display())
+        self.logger.info(self.generate_upload_status()._display())
 
     def _spawn_transient_upload_workers(self, upload_workers):
         upload_workers = [worker for worker in upload_workers if worker.is_alive()]
@@ -314,7 +314,7 @@ class Snowfakery(BaseSalesforceApiTask):
             try:
                 subtask()
             except Exception as e:
-                print("Exception DONE", TaskClass.__name__, e)
+                self.logger.warn("Exception Raised! {} {}", TaskClass.__name__, e)
                 self._done.value = True
                 raise e
 
@@ -359,7 +359,7 @@ class Snowfakery(BaseSalesforceApiTask):
     def workingdir_or_tempdir(self, working_directory: T.Optional[Path]):
         if working_directory:
             working_directory.mkdir()
-            print(f"Working Directory {working_directory}")
+            self.logger.info(f"Working Directory {working_directory}")
             yield working_directory
         else:
             # with TemporaryDirectory() as tempdir:
@@ -367,7 +367,7 @@ class Snowfakery(BaseSalesforceApiTask):
 
             # do not clean up tempdirs for now
             tempdir = mkdtemp()
-            print(f"Working Directory {tempdir}")
+            self.logger.info(f"Working Directory {tempdir}")
             yield tempdir
 
     @contextmanager
@@ -391,10 +391,12 @@ class Snowfakery(BaseSalesforceApiTask):
         database_url = f"sqlite:///{generated_data}"
         self._cleanup_object_tables(*self._setup_engine(database_url))
 
-
     @contextmanager
     def _add_tempfile_logger(self, my_log: Path):
         if self.unified_logging:
+            i = init_logger()       # FIXME: this is messy
+            if hasattr(i, "__enter__"):
+                i.__enter__()
             yield
         else:
             with open(my_log, "w") as f:
