@@ -54,8 +54,8 @@ Insert 200 Pledged Opportunities
         ...  CloseDate=${date}
     ${numobjects}=  Get Length     ${objects}
     FOR     ${index}   IN RANGE   ${numobjects}
-        ${object}=  Set Variable    @{objects}[${index}]
-        ${account}=     Set Variable    @{accounts}[${index}]
+        ${object}=  Set Variable    ${objects}[${index}]
+        ${account}=     Set Variable    ${accounts}[${index}]
         ${account_id}=  Set Variable    ${account}[Id]
         set to dictionary   ${object}   AccountId   ${account_id}
     END
@@ -66,7 +66,9 @@ Insert 200 Pledged Opportunities
 *** Test Cases ***
 
 Perftest - Insert 200 Contacts
+    Start Performance Timer
     Insert 200 Contacts
+    Stop Performance Timer
 
 Perftest - Insert 200 Contacts With Addresses
     @{objects}=  Generate Test Data  Contact  200  

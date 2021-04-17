@@ -32,10 +32,10 @@ bulkgen_task = "cumulusci.tasks.bulkdata.generate_from_yaml.GenerateDataFromYaml
 @dataclass
 class UploadStatus:
     confirmed_count_in_org: int
-    rows_being_generated: int
-    rows_queued: int
-    rows_being_loaded: int
-    rows_finished: int
+    sets_being_generated: int
+    sets_queued: int
+    sets_being_loaded: int
+    sets_finished: int
     target_count: int
     base_batch_size: int
     delay_multiple: int
@@ -52,11 +52,11 @@ class UploadStatus:
         if self.done:
             return 0
         else:
-            return max(self.min_rows_remaining // self.batch_size, 1)
+            return max(self.min_sets_remaining // self.batch_size, 1)
 
     @property
     def total_needed_generators(self):
-        if self.wait_for_org_to_catch_up:
+        if self.wait_for_org_count_to_catch_up:
             return 0
         return min(
             self.user_max_num_generator_workers,
@@ -65,28 +65,28 @@ class UploadStatus:
         )
 
     @property
-    def wait_for_org_to_catch_up(self):
+    def wait_for_org_count_to_catch_up(self):
         return self.maximum_estimated_count_so_far > self.target_count
 
     @property
     def total_in_flight(self):
-        return self.rows_being_generated + self.rows_queued + self.rows_being_loaded
+        return self.sets_being_generated + self.sets_queued + self.sets_being_loaded
 
     @property
     def maximum_estimated_count_so_far(self):
         return self.confirmed_count_in_org + self.total_in_flight
 
     @property
-    def min_rows_remaining(self):
+    def min_sets_remaining(self):
         return max(0, self.target_count - self.maximum_estimated_count_so_far)
 
     @property
     def throttling(self):
-        return self.min_rows_remaining < 1
+        return self.min_sets_remaining < 1
 
     @property
     def batch_size(self):
-        if self.min_rows_remaining > 0:
+        if self.min_sets_remaining > 0:
             return self.base_batch_size * self.delay_multiple
         else:
             return self.base_batch_size
@@ -103,11 +103,11 @@ class UploadStatus:
                 "target_count",
                 "confirmed_count_in_org",
                 "batch_size",
-                "rows_being_generated",
-                "rows_queued",
-                "rows_being_loaded",
-                "rows_finished",
-                "wait_for_org_to_catch_up",
+                "sets_being_generated",
+                "sets_queued",
+                "sets_being_loaded",
+                "sets_finished",
+                "wait_for_org_count_to_catch_up",
             ]
         return "\n" + "\n".join(f"{a.replace('_', ' ').title()}: {getattr(self, a)}" for a in keys if not a[0] == "_")
 
@@ -197,7 +197,7 @@ class Snowfakery(BaseSalesforceApiTask):
             self.logger.info(
                 "\n********** PROGRESS *********",
             )
-            self.logger.info(upload_status._display(detailed=True))
+            self.logger.info(upload_status._display(detailed=False))
             upload_workers = self._spawn_transient_upload_workers(upload_workers)
             generator_workers = [
                 worker for worker in generator_workers if worker.is_alive()
@@ -338,7 +338,7 @@ class Snowfakery(BaseSalesforceApiTask):
         if self._done.value:
             return True
 
-    def rows_in_dir(self, dir):
+    def sets_in_dir(self, dir):
         idx_and_counts = (subdir.name.split("_") for subdir in dir.glob("*_*"))
         return sum(int(count) for (idx, count) in idx_and_counts)
 
@@ -346,15 +346,15 @@ class Snowfakery(BaseSalesforceApiTask):
         return UploadStatus(
             confirmed_count_in_org=self.get_org_record_count(),
             target_count=int(self.options.get("num_records")),
-            rows_being_generated=self.rows_in_dir(self.generators_path),
-            rows_queued=self.rows_in_dir(self.queue_for_loading_directory),
+            sets_being_generated=self.sets_in_dir(self.generators_path),
+            sets_queued=self.sets_in_dir(self.queue_for_loading_directory),
             delay_multiple=self.delay_multiple,
             # note that these may count as already imported in the org
-            rows_being_loaded=self.rows_in_dir(self.loaders_path),
+            sets_being_loaded=self.sets_in_dir(self.loaders_path),
             upload_queue_backlog=sum(
                 1 for dir in self.queue_for_loading_directory.glob("*_*")
             ),
-            rows_finished=self.rows_in_dir(self.finished_directory),
+            sets_finished=self.sets_in_dir(self.finished_directory),
             base_batch_size=500,  # FIXME
             user_max_num_uploader_workers=self.num_uploader_workers,
             user_max_num_generator_workers=self.num_generator_workers,
@@ -443,9 +443,9 @@ def test():
         base_batch_size=5000,
         confirmed_count_in_org=20000,
         delay_multiple=1,
-        rows_being_generated=5000,
-        rows_being_loaded=20000,
-        rows_queued=0,
+        sets_being_generated=5000,
+        sets_being_loaded=20000,
+        sets_queued=0,
         target_count=30000,
         upload_queue_backlog=1,
         user_max_num_generator_workers=4,
@@ -457,9 +457,9 @@ def test():
         base_batch_size=5000,
         confirmed_count_in_org=0,
         delay_multiple=1,
-        rows_being_generated=5000,
-        rows_being_loaded=20000,
-        rows_queued=0,
+        sets_being_generated=5000,
+        sets_being_loaded=20000,
+        sets_queued=0,
         target_count=30000,
         upload_queue_backlog=1,
         user_max_num_generator_workers=4,
@@ -471,9 +471,9 @@ def test():
         base_batch_size=5000,
         confirmed_count_in_org=0,
         delay_multiple=1,
-        rows_being_generated=5000,
-        rows_being_loaded=15000,
-        rows_queued=0,
+        sets_being_generated=5000,
+        sets_being_loaded=15000,
+        sets_queued=0,
         target_count=30000,
         upload_queue_backlog=1,
         user_max_num_generator_workers=4,
@@ -485,9 +485,9 @@ def test():
         base_batch_size=5000,
         confirmed_count_in_org=29000,
         delay_multiple=1,
-        rows_being_generated=0,
-        rows_being_loaded=0,
-        rows_queued=0,
+        sets_being_generated=0,
+        sets_being_loaded=0,
+        sets_queued=0,
         target_count=30000,
         upload_queue_backlog=0,
         user_max_num_generator_workers=4,
@@ -499,9 +499,9 @@ def test():
         base_batch_size=5000,
         confirmed_count_in_org=4603,
         delay_multiple=1,
-        rows_being_generated=5000,
-        rows_being_loaded=20000,
-        rows_queued=0,
+        sets_being_generated=5000,
+        sets_being_loaded=20000,
+        sets_queued=0,
         target_count=30000,
         upload_queue_backlog=0,
         user_max_num_generator_workers=4,

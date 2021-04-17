@@ -10,6 +10,13 @@ tasks:
         class_path: cumulusci.tasks.robotframework.Robot
         group: Performance Tests
 
+    test_performance_demo:
+        class_path: cumulusci.tasks.robotframework.Robot
+        options:
+            suites: robot/core-sfdo-performance-tests
+            test: Perftest - Insert 200 Contacts
+
+
     snowfakery:
         class_path: tasks.snowscale.Snowfakery
 
@@ -27,14 +34,20 @@ flows:
                 task: disable_duplicate_rules
 
             2:
+                task: deploy_post
+
+            3:
                 task: snowfakery
                 options:
                     num_records: 45_000
                     recipe: datasets/basic-salesforce.recipe.yml
-                    num_records_tablename: Opportunity
+                    num_records_tablename: Account
                     unified_logging: True
                     # num_generator_workers: 0
                     # num_uploader_workers: 0
+
+            4:
+                task: test_performance_demo
 
     test_performance_scratch:
         steps:
