@@ -29,7 +29,7 @@ flows:
             2:
                 task: snowfakery
                 options:
-                    num_records: 30_000
+                    num_records: 45_000
                     recipe: datasets/basic-salesforce.recipe.yml
                     num_records_tablename: Opportunity
                     unified_logging: True
