@@ -19,6 +19,10 @@ tasks:
 
     snowfakery:
         class_path: tasks.snowscale.Snowfakery
+        options:
+            # num_records: 45_000
+            recipe: datasets/basic-salesforce.recipe.yml
+            num_records_tablename: Account
 
     disable_duplicate_rules:
         class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
@@ -28,7 +32,7 @@ tasks:
 
 
 flows:
-    demo_snowscaler:
+    test_performance_scratch:
         steps:
             1:
                 task: disable_duplicate_rules
@@ -39,20 +43,10 @@ flows:
             3:
                 task: snowfakery
                 options:
-                    num_records: 45_000
-                    recipe: datasets/basic-salesforce.recipe.yml
-                    num_records_tablename: Account
-                    unified_logging: True
-                    # num_generator_workers: 0
-                    # num_uploader_workers: 0
+                    num_records: 40_000
 
             4:
                 task: test_performance_demo
-
-    test_performance_scratch:
-        steps:
-            1:
-                flow: demo_snowscaler
 
     test_performance_LDV:
         steps:

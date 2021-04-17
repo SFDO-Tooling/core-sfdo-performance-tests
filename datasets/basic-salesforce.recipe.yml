@@ -79,10 +79,6 @@
       reference: Account
 
 - object: Opportunity
-  count:
-    random_number:
-      min: 3
-      max: 5
   fields:
     Name: ${{fake.word}} Opportunity
     CloseDate:

@@ -2,34 +2,27 @@ import shutil
 import time
 import typing as T
 
-from pathlib import Path
-import multiprocessing
-import threading
+from pathlib import Path  # test this on Windows
 from tempfile import mkdtemp
-from contextlib import contextmanager, redirect_stdout, redirect_stderr, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
+from threading import Thread
+from multiprocessing import Process
 
 from sqlalchemy import MetaData, create_engine
 
-from cumulusci.tasks.bulkdata.generate_from_yaml import GenerateDataFromYaml
-from cumulusci.tasks.bulkdata.load import LoadData
 from cumulusci.tasks.salesforce import BaseSalesforceApiTask
 from cumulusci.tasks.bulkdata.generate_and_load_data_from_yaml import (
     GenerateAndLoadDataFromYaml,
 )
 from cumulusci.core.config import TaskConfig
-from cumulusci.cli.logger import init_logger
 
-bulkgen_task = "cumulusci.tasks.bulkdata.generate_from_yaml.GenerateDataFromYaml"
-
-
-# # switch to using spawn everywhere.
-# # on MetaCI this helps us refresh database and other connections
-# # Also may be generally more consistent behaviour across platforms
-# multiprocessing = get_context('spawn')
+from .workers.parallel_worker import ParallelWorker
+from cumulusci.tasks.bulkdata.load import LoadData
+from cumulusci.tasks.bulkdata.generate_from_yaml import GenerateDataFromYaml
 
 
-@dataclass
+@dataclass()
 class UploadStatus:
     confirmed_count_in_org: int
     sets_being_generated: int
@@ -42,10 +35,12 @@ class UploadStatus:
     upload_queue_backlog: int
     user_max_num_uploader_workers: int
     user_max_num_generator_workers: int
+    max_batch_size: int
+    elapsed_seconds: int
 
     @property
     def max_needed_generators_to_fill_queue(self):
-        return max(self.user_max_num_uploader_workers - self.upload_queue_backlog, 0)
+        return max(self.user_max_num_generator_workers - self.upload_queue_backlog, 0)
 
     @property
     def max_needed_generators_to_fill_org(self):
@@ -66,19 +61,19 @@ class UploadStatus:
 
     @property
     def wait_for_org_count_to_catch_up(self):
-        return self.maximum_estimated_count_so_far > self.target_count
+        return self.maximum_estimated_sets_so_far > self.target_count
 
     @property
     def total_in_flight(self):
         return self.sets_being_generated + self.sets_queued + self.sets_being_loaded
 
     @property
-    def maximum_estimated_count_so_far(self):
+    def maximum_estimated_sets_so_far(self):
         return self.confirmed_count_in_org + self.total_in_flight
 
     @property
     def min_sets_remaining(self):
-        return max(0, self.target_count - self.maximum_estimated_count_so_far)
+        return max(0, self.target_count - self.maximum_estimated_sets_so_far)
 
     @property
     def throttling(self):
@@ -86,8 +81,12 @@ class UploadStatus:
 
     @property
     def batch_size(self):
-        if self.min_sets_remaining > 0:
-            return self.base_batch_size * self.delay_multiple
+        if not self.throttling:
+            return min(
+                self.base_batch_size * self.delay_multiple,
+                self.max_batch_size,
+                self.min_sets_remaining,
+            )
         else:
             return self.base_batch_size
 
@@ -109,7 +108,11 @@ class UploadStatus:
                 "sets_finished",
                 "wait_for_org_count_to_catch_up",
             ]
-        return "\n" + "\n".join(f"{a.replace('_', ' ').title()}: {getattr(self, a)}" for a in keys if not a[0] == "_")
+        return "\n" + "\n".join(
+            f"{a.replace('_', ' ').title()}: {getattr(self, a):,}"
+            for a in keys
+            if not a[0] == "_"
+        )
 
 
 class Snowfakery(BaseSalesforceApiTask):
@@ -128,12 +131,8 @@ class Snowfakery(BaseSalesforceApiTask):
         "num_records_tablename": {},  # TODO : Better name
         "max_batch_size": {},  # TODO Impl, Docs
         "unified_logging": {},  # TODO RETHINK
+        "subtask_type": {},  # TODO: RETHINK
     }
-
-    def _init_options(self, kwargs):
-        args = {"data_generation_task": bulkgen_task, **kwargs}
-
-        super()._init_options(args)
 
     def _validate_options(self):
         super()._validate_options()
@@ -145,14 +144,22 @@ class Snowfakery(BaseSalesforceApiTask):
         recipe = Path(self.options.get("recipe"))
         assert recipe.exists()
         assert isinstance(self.options.get("num_records_tablename"), str)
+        self.num_records_tablename = self.options.get("num_records_tablename")
         assert int(self.options.get("num_records")), self.options.get("num_records")
         self.unified_logging = self.options.get("unified_logging")
+        subtask_type_name = (self.options.get("subtask_type") or "thread").lower()
+        if subtask_type_name == "thread":
+            self.subtask_type = Thread
+        elif subtask_type_name == "process":
+            self.subtask_type = Process
+        else:
+            assert 0
 
     def _run_task(self):
-        self._done = multiprocessing.Value("i", False)
+        self.start_time = time.time()
         self.max_batch_size = self.options.get("max_batch_size", 250_000)
         self.recipe = Path(self.options.get("recipe"))
-        self.job_counter = 1
+        self.job_counter = 0
         self.delay_multiple = 1
 
         working_directory = self.options.get("working_directory")
@@ -172,11 +179,8 @@ class Snowfakery(BaseSalesforceApiTask):
             self.loaders_path = Path(tempdir) / "3_loaders"
             self.loaders_path.mkdir()
             self.finished_directory = Path(tempdir, "4_finished")
-            self.finished_directory.mkdir()
-
+            self.failures_dir = Path(tempdir, "failures")
             self._loop(template_path, tempdir)
-
-            self._done.value = True
 
             for char in "☃  D ❄ O ❆ N ❉ E ☃":
                 print(char, end="", flush=True)
@@ -184,9 +188,6 @@ class Snowfakery(BaseSalesforceApiTask):
             print()
 
     def _loop(self, template_path, tempdir):
-        self._parallelized_loop(template_path, tempdir)
-
-    def _parallelized_loop(self, template_path, tempdir):
         generator_workers = []
         upload_workers = []
 
@@ -197,7 +198,7 @@ class Snowfakery(BaseSalesforceApiTask):
             self.logger.info(
                 "\n********** PROGRESS *********",
             )
-            self.logger.info(upload_status._display(detailed=False))
+            self.logger.info(upload_status._display(detailed=True))
             upload_workers = self._spawn_transient_upload_workers(upload_workers)
             generator_workers = [
                 worker for worker in generator_workers if worker.is_alive()
@@ -237,62 +238,18 @@ class Snowfakery(BaseSalesforceApiTask):
             jobs_to_be_done = jobs_to_be_done[0:free_workers]
             for job in jobs_to_be_done:
                 working_directory = shutil.move(str(job), str(self.loaders_path))
-                process = threading.Thread(target=self._load_process, args=[working_directory])
+                working_directory = Path(working_directory)
+                data_loader = self.data_loader_worker(working_directory)
+                # TODO: add an error trapping/reporting wrapper
                 # add an error trapping/reporting wrapper
-                process.start()
-                upload_workers.append(process)
+                data_loader.start()
+
+                upload_workers.append(data_loader)
         return upload_workers
 
-    def _spawn_transient_generator_workers(self, workers, upload_status, template_path):
-        workers = [worker for worker in workers if worker.is_alive()]
-        # TODO: Check for errors!!!
-
-        total_needed_workers = upload_status.total_needed_generators
-        new_workers = total_needed_workers - len(workers)
-
-        for idx in range(new_workers):
-            self.job_counter += 1
-
-            args = [
-                self.generators_path,
-                upload_status.batch_size,
-                template_path,
-                self.job_counter,
-            ]
-            process = threading.Thread(target=self._do_generate, args=args)
-            # add an error trapping/reporting wrapper
-            process.start()
-
-            workers.append(process)
-        return workers
-
-    def _do_generate(self, working_parent_dir, batch_size, template_path, idx: int):
-        working_dir = working_parent_dir / (str(idx) + "_" + str(batch_size))
-        shutil.copytree(template_path, working_dir)
-        database_file = working_dir / "generated_data.db"
-        # not needed once just_once is implemented
+    def data_loader_worker(self, working_dir: Path):
         mapping_file = working_dir / "temp_mapping.yml"
-        database_url = f"sqlite:///{database_file}"
-        #
-        assert working_dir.exists()
-        options = {
-            "generator_yaml": str(self.recipe),
-            "database_url": database_url,
-            "working_directory": working_dir,
-            "num_records": batch_size,
-            "generate_mapping_file": mapping_file,
-            "reset_oids": False,
-            "continuation_file": f"{working_dir}/continuation.yml",
-            "num_records_tablename": self.options.get("num_records_tablename"),
-        }
-        self._invoke_subtask(GenerateDataFromYaml, options, working_dir, False)
-        assert mapping_file.exists()
-        shutil.move(str(working_dir), str(self.queue_for_loading_directory))
-
-    def _load_process(self, working_directory: str):
-        working_directory = Path(working_directory)
-        mapping_file = working_directory / "temp_mapping.yml"
-        database_file = working_directory / "generated_data.db"
+        database_file = working_dir / "generated_data.db"
         assert mapping_file.exists(), mapping_file
         assert database_file.exists(), database_file
         database_url = f"sqlite:///{database_file}"
@@ -302,11 +259,82 @@ class Snowfakery(BaseSalesforceApiTask):
             "reset_oids": False,
             "database_url": database_url,
         }
-        self._invoke_subtask(LoadData, options, working_directory, False)
-        shutil.move(str(working_directory), str(self.finished_directory))
+
+        return ParallelWorker(
+            TaskClass=LoadData,
+            project_config=self.project_config,
+            org_config=self.org_config,
+            spawn_class=self.subtask_type,
+            task_options=options,
+            working_dir=working_dir,
+            output_dir=self.finished_directory,
+            redirect_logging=not self.unified_logging,
+            failures_dir=self.failures_dir,
+        )
+
+    def _spawn_transient_generator_workers(
+        self, workers: T.Sequence, upload_status: UploadStatus, template_path: Path
+    ):
+        workers = [worker for worker in workers if worker.is_alive()]
+
+        # TODO: Check for errors!!!
+        total_needed_workers = upload_status.total_needed_generators
+        new_workers = total_needed_workers - len(workers)
+
+        for idx in range(new_workers):
+            self.job_counter += 1
+
+            data_generator = self.data_generator_worker(
+                upload_status,
+                template_path,
+                self.job_counter,
+            )
+            # add an error trapping/reporting wrapper
+            data_generator.start()
+
+            workers.append(data_generator)
+        return workers
+
+    def data_generator_worker(
+        self, upload_status: UploadStatus, template_path: Path, idx: int
+    ):
+        batch_size = upload_status.batch_size
+        working_dir = self.generators_path / (str(idx) + "_" + str(batch_size))
+        shutil.copytree(template_path, working_dir)
+        assert working_dir.exists()
+        database_file = working_dir / "generated_data.db"
+        assert database_file.exists()
+        assert isinstance(batch_size, int)
+        mapping_file = working_dir / "temp_mapping.yml"
+        assert mapping_file.exists()
+
+        database_url = f"sqlite:///{database_file}"
+        options = {
+            "generator_yaml": str(self.recipe),
+            "database_url": database_url,
+            "working_directory": working_dir,
+            "num_records": upload_status.batch_size,
+            "reset_oids": False,
+            "continuation_file": f"{working_dir}/continuation.yml",
+            "num_records_tablename": self.num_records_tablename,
+        }
+        return ParallelWorker(
+            TaskClass=GenerateDataFromYaml,
+            project_config=self.project_config,
+            org_config=self.org_config,
+            spawn_class=self.subtask_type,
+            task_options=options,
+            working_dir=working_dir,
+            output_dir=self.queue_for_loading_directory,
+            redirect_logging=not self.unified_logging,
+            failures_dir=self.failures_dir,
+        )
 
     def _invoke_subtask(
-        self, TaskClass: type, subtask_options: T.Mapping[str, T.Any], working_dir: Path,
+        self,
+        TaskClass: type,
+        subtask_options: T.Mapping[str, T.Any],
+        working_dir: Path,
         redirect_logging: bool,
     ):
         subtask_config = TaskConfig({"options": subtask_options})
@@ -318,25 +346,9 @@ class Snowfakery(BaseSalesforceApiTask):
             name=self.name,
             stepnum=self.stepnum,
         )
+        subtask()
 
-        if redirect_logging:
-            def logger():
-                return self._add_tempfile_logger(working_dir / f"{TaskClass.__name__}.log")
-        else:   # do nothing
-            logger = nullcontext
-
-        with logger():
-            try:
-                subtask()
-            except Exception as e:
-                self.logger.warn("Exception Raised! {} {}", TaskClass.__name__, e)
-                self._done.value = True
-                raise e
-
-    # TODO: Probably don't need this
-    def done(self):
-        if self._done.value:
-            return True
+    from pysnooper import snoop
 
     def sets_in_dir(self, dir):
         idx_and_counts = (subdir.name.split("_") for subdir in dir.glob("*_*"))
@@ -358,6 +370,8 @@ class Snowfakery(BaseSalesforceApiTask):
             base_batch_size=500,  # FIXME
             user_max_num_uploader_workers=self.num_uploader_workers,
             user_max_num_generator_workers=self.num_generator_workers,
+            max_batch_size=self.max_batch_size,
+            elapsed_seconds=int(time.time() - self.start_time),
         )
 
     def get_org_record_count(self):
@@ -405,18 +419,6 @@ class Snowfakery(BaseSalesforceApiTask):
         assert generated_data.exists(), generated_data
         database_url = f"sqlite:///{generated_data}"
         self._cleanup_object_tables(*self._setup_engine(database_url))
-
-    @contextmanager
-    def _add_tempfile_logger(self, my_log: Path):
-        if self.unified_logging:
-            i = init_logger()       # FIXME: this is messy
-            if hasattr(i, "__enter__"):
-                i.__enter__()
-            yield
-        else:
-            with open(my_log, "w") as f:
-                with redirect_stdout(f), redirect_stderr(f), init_logger():
-                    yield f
 
     def _setup_engine(self, database_url):
         """Set up the database engine"""
@@ -512,3 +514,11 @@ def test():
 
 if __name__ == "__main__":
     test()
+
+
+## IDEA:
+#
+# --finish_when "Accounts in org=10_000"
+# --finish_when "Accounts uploaded=10_000"#
+# --finish_when "Copies=10_000"
+#
