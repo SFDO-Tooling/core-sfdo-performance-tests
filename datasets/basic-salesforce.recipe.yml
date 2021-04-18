@@ -1,5 +1,9 @@
-# Hard-coded objects
+- plugin: snowfakery.standard_plugins.base64.Base64
+- plugin: snowfakery.standard_plugins.file.File
+
+# Hard-coded and just_once objects
 - object: Account
+  just_once: True
   nickname: bluth_co
   fields:
     Name: The Bluth Company
@@ -7,6 +11,7 @@
     NumberOfEmployees: 6
 
 - object: Contact
+  just_once: True
   nickname: Michael
   fields:
     FirstName: Michael
@@ -79,6 +84,7 @@
       reference: Account
 
 - object: Opportunity
+  count: 2
   fields:
     Name: ${{fake.word}} Opportunity
     CloseDate:
@@ -104,3 +110,34 @@
       reference:
         Account
 
+- object: Account
+  count: 50
+  just_once: True
+  fields:
+    Name:
+      fake: company
+  friends:
+  - object: ContentVersion
+    just_once: True
+    fields:
+        Title: Photo
+        PathOnClient: profile.png
+        VersionData:
+          Base64.encode:
+            - File.file_data:
+                encoding: binary
+                file: profile.png
+        FirstPublishLocationId:
+          reference: Contact
+
+  - object: ContentVersion
+    fields:
+        Title: PDF
+        PathOnClient: example.pdf
+        VersionData:
+          Base64.encode:
+            - File.file_data:
+                encoding: binary
+                file: example.pdf
+        FirstPublishLocationId:
+          reference: Account

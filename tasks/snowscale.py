@@ -1,5 +1,7 @@
 import shutil
 import time
+from datetime import timedelta
+from cumulusci.core.utils import format_duration
 import typing as T
 
 from pathlib import Path  # test this on Windows
@@ -145,7 +147,7 @@ class Snowfakery(BaseSalesforceApiTask):
         assert recipe.exists()
         assert isinstance(self.options.get("num_records_tablename"), str)
         self.num_records_tablename = self.options.get("num_records_tablename")
-        assert int(self.options.get("num_records")), self.options.get("num_records")
+        self.num_records = int(self.options.get("num_records"))
         self.unified_logging = self.options.get("unified_logging")
         subtask_type_name = (self.options.get("subtask_type") or "thread").lower()
         if subtask_type_name == "thread":
@@ -180,9 +182,13 @@ class Snowfakery(BaseSalesforceApiTask):
             self.loaders_path.mkdir()
             self.finished_directory = Path(tempdir, "4_finished")
             self.failures_dir = Path(tempdir, "failures")
-            self._loop(template_path, tempdir)
+            upload_status = self._loop(template_path, tempdir)
 
-            for char in "☃  D ❄ O ❆ N ❉ E ☃":
+            elapsed = format_duration(timedelta(seconds=upload_status.elapsed_seconds))
+
+            for (
+                char
+            ) in f"☃  D ❄ O ❆ N ❉ E ☃     :  {elapsed}, {upload_status.confirmed_count_in_org:,} sets":
                 print(char, end="", flush=True)
                 time.sleep(0.10)
             print()
@@ -215,6 +221,8 @@ class Snowfakery(BaseSalesforceApiTask):
             self.logger.info(f"Generator Workers: {len(generator_workers)}")
             self.logger.info(f"Upload Workers: {len(upload_workers)}")
             self.logger.info(f"Queue size: {upload_status.upload_queue_backlog}")
+            for k, v in self.get_org_record_counts().items():
+                self.logger.info(f"      COUNT: {k}: {v:,}")
             self.logger.info(f"Working Directory: {tempdir}")
 
             time.sleep(3)
@@ -226,6 +234,7 @@ class Snowfakery(BaseSalesforceApiTask):
             worker.join()
 
         self.logger.info(self.generate_upload_status()._display())
+        return upload_status
 
     def _spawn_transient_upload_workers(self, upload_workers):
         upload_workers = [worker for worker in upload_workers if worker.is_alive()]
@@ -356,8 +365,8 @@ class Snowfakery(BaseSalesforceApiTask):
 
     def generate_upload_status(self):
         return UploadStatus(
-            confirmed_count_in_org=self.get_org_record_count(),
-            target_count=int(self.options.get("num_records")),
+            confirmed_count_in_org=self.get_org_record_count_for_sobject(),
+            target_count=self.num_records,
             sets_being_generated=self.sets_in_dir(self.generators_path),
             sets_queued=self.sets_in_dir(self.queue_for_loading_directory),
             delay_multiple=self.delay_multiple,
@@ -374,15 +383,25 @@ class Snowfakery(BaseSalesforceApiTask):
             elapsed_seconds=int(time.time() - self.start_time),
         )
 
-    def get_org_record_count(self):
+    def get_org_record_count_for_sobject(self):
         sobject = self.options.get("num_records_tablename")
         query = f"select count(Id) from {sobject}"
         count = self.sf.query(query)["records"][0]["expr0"]
         return int(count)
         # I'll probably need this code when I hit big orgs
 
-        # data = self.sf.restful(f"limits/recordCount?sObjects={table}")
-        # count = int(data["sObjects"][0]["count"])
+    def get_org_record_counts(self):
+        data = self.sf.restful("limits/recordCount")
+        blockwords = ["Permission", "History", "ListView", "Feed", "Setup", "Event"]
+        rc = {
+            sobject["name"]: sobject["count"]
+            for sobject in data["sObjects"]
+            if sobject["count"] > 100
+            and not any(blockword in sobject["name"] for blockword in blockwords)
+        }
+        total = sum(rc.values())
+        rc["TOTAL"] = total
+        return rc
 
     @contextmanager
     def workingdir_or_tempdir(self, working_directory: T.Optional[Path]):
@@ -503,6 +522,34 @@ def test():
         delay_multiple=1,
         sets_being_generated=5000,
         sets_being_loaded=20000,
+        sets_queued=0,
+        target_count=30000,
+        upload_queue_backlog=0,
+        user_max_num_generator_workers=4,
+        user_max_num_uploader_workers=15,
+    )
+    assert u.total_needed_generators == 1, u.total_needed_generators
+
+    # TODO: In a situation like this, it is sometimes the case
+    #       that there are not enough records generated to upload.
+    #
+    #       Due to internal striping, the confirmed_count_in_org
+    #       could be correct and yet the org pauses while uploading
+    #       other sobjects for several minutes.
+    #
+    #       Need to get rid of the assumption that every record
+    #       that is created must be uploaded and instead make a
+    #       backlog that can be either uploaded or discarded.
+
+    #       Perhaps the upload queue should always be full and
+    #       throttling should always happen in the uploaders, not
+    #       the generators.
+    u = UploadStatus(
+        base_batch_size=500,
+        confirmed_count_in_org=39800,
+        delay_multiple=1,
+        sets_being_generated=0,
+        sets_being_loaded=5000,
         sets_queued=0,
         target_count=30000,
         upload_queue_backlog=0,

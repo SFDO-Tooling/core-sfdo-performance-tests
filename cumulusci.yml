@@ -23,6 +23,7 @@ tasks:
             # num_records: 45_000
             recipe: datasets/basic-salesforce.recipe.yml
             num_records_tablename: Account
+            subtask_type: thread
 
     disable_duplicate_rules:
         class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
@@ -30,8 +31,32 @@ tasks:
             active: False
             api_names: "*"
 
+    delete_data:
+        options:
+            objects:
+                - Account
+                - Contact
+                - Opportunity
+                - ContentDocument
+            ignore_row_errors: True
+            hardDelete: True
 
 flows:
+    setup_ldv_org:
+        steps:
+            1:
+                task: disable_duplicate_rules
+
+            2:
+                task: create_bulk_data_permission_set
+                options:
+                    user_permissions: PermissionsBulkApiHardDelete
+
+            3:
+                task: assign_permission_sets
+                options:
+                    api_names: CumulusCI_Bulk_Data
+
     test_performance_scratch:
         steps:
             1:
@@ -50,7 +75,14 @@ flows:
 
     test_performance_LDV:
         steps:
-            1:
+            2:
+                task: delete_data
+            3:
+                task: snowfakery
+                options:
+                    num_records: 1_000_000
+
+            4:
                 task: test_performance
                 options:
                     suites: robot/core-sfdo-performance-tests

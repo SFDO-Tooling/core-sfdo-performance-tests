@@ -1,28 +1,28 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
     <fields>
-        <fullName>Gender__c</fullName>
+        <fullName>Type__c</fullName>
         <externalId>false</externalId>
-        <label>Gender</label>
+        <label>Contact Type</label>
         <required>false</required>
         <trackFeedHistory>false</trackFeedHistory>
         <type>Picklist</type>
         <valueSet>
-            <restricted>true</restricted>
+            <restricted>false</restricted>
             <valueSetDefinition>
                 <sorted>false</sorted>
                 <value>
-                    <fullName>Male</fullName>
+                    <fullName>Volunteer</fullName>
                     <default>false</default>
-                    <label>Male</label>
+                    <label>Volunteer</label>
                 </value>
                 <value>
-                    <fullName>Female</fullName>
+                    <fullName>Staff Member</fullName>
                     <default>false</default>
-                    <label>Female</label>
+                    <label>Staff Member</label>
                 </value>
                 <value>
-                    <fullName>Non-Binary</fullName>
+                    <fullName>Donor</fullName>
                     <default>false</default>
                     <label>Non-Binary</label>
                 </value>

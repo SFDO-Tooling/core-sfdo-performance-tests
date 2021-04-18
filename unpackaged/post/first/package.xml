@@ -2,7 +2,7 @@
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>PMM-Caseman-SE-Demo-Data</fullName>
     <types>
-        <members>Contact.Gender__c</members>
+        <members>Contact.Type__c</members>
         <name>CustomField</name>
     </types>
     <version>50.0</version>
