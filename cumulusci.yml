@@ -23,7 +23,7 @@ tasks:
             # num_records: 45_000
             recipe: datasets/basic-salesforce.recipe.yml
             num_records_tablename: Account
-            subtask_type: thread
+            subtask_type: process
 
     disable_duplicate_rules:
         class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
@@ -80,9 +80,9 @@ flows:
             3:
                 task: snowfakery
                 options:
-                    num_records: 1_000_000
+                    num_records: 30_000_000
 
             4:
-                task: test_performance
+                task: test_performance_demo
                 options:
                     suites: robot/core-sfdo-performance-tests

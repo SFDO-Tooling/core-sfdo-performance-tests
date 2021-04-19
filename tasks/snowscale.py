@@ -24,6 +24,27 @@ from cumulusci.tasks.bulkdata.load import LoadData
 from cumulusci.tasks.bulkdata.generate_from_yaml import GenerateDataFromYaml
 
 
+BASE_BATCH_SIZE = 500  # FIXME
+
+
+def clip(value, min_=None, max_=None):
+    if min_ is not None:
+        value = max(value, min_)
+    if max_ is not None:
+        value = min(value, max_)
+    return value
+
+
+def generate_batches(target: int, min_batch_size, max_batch_size):
+    count = 0
+    batch_size = min_batch_size
+    max_batch_size = min(max_batch_size, int(target // 20))
+    while count < target:
+        batch_size = int(min(batch_size * 1.5, max_batch_size, target - count))
+        count += batch_size
+        yield batch_size, count
+
+
 @dataclass()
 class UploadStatus:
     confirmed_count_in_org: int
@@ -44,53 +65,57 @@ class UploadStatus:
     def max_needed_generators_to_fill_queue(self):
         return max(self.user_max_num_generator_workers - self.upload_queue_backlog, 0)
 
-    @property
-    def max_needed_generators_to_fill_org(self):
-        if self.done:
-            return 0
-        else:
-            return max(self.min_sets_remaining // self.batch_size, 1)
+    # @property
+    # def max_needed_generators_to_fill_org(self):
+    #     if self.done:
+    #         return 0
+    #     else:
+    #         return max(self.min_sets_remaining // self.batch_size, 1)
 
     @property
     def total_needed_generators(self):
-        if self.wait_for_org_count_to_catch_up:
+        if self.done:
             return 0
-        return min(
-            self.user_max_num_generator_workers,
-            self.max_needed_generators_to_fill_org,
-            self.max_needed_generators_to_fill_queue,
-        )
+        else:
+            return 4
+        # if self.wait_for_org_count_to_catch_up:
+        #     return 0
+        # return min(
+        #     self.user_max_num_generator_workers,
+        #     self.max_needed_generators_to_fill_org,
+        #     self.max_needed_generators_to_fill_queue,
+        # )
 
-    @property
-    def wait_for_org_count_to_catch_up(self):
-        return self.maximum_estimated_sets_so_far > self.target_count
+    # @property
+    # def wait_for_org_count_to_catch_up(self):
+    #     return self.maximum_estimated_sets_so_far > self.target_count
 
     @property
     def total_in_flight(self):
         return self.sets_being_generated + self.sets_queued + self.sets_being_loaded
 
-    @property
-    def maximum_estimated_sets_so_far(self):
-        return self.confirmed_count_in_org + self.total_in_flight
+    # @property
+    # def maximum_estimated_sets_so_far(self):
+    #     return self.confirmed_count_in_org + self.total_in_flight
 
-    @property
-    def min_sets_remaining(self):
-        return max(0, self.target_count - self.maximum_estimated_sets_so_far)
+    # @property
+    # def min_sets_remaining(self):
+    #     return max(0, self.target_count - self.maximum_estimated_sets_so_far)
 
-    @property
-    def throttling(self):
-        return self.min_sets_remaining < 1
+    # @property
+    # def throttling(self):
+    #     return self.min_sets_remaining < 1
 
-    @property
-    def batch_size(self):
-        if not self.throttling:
-            return min(
-                self.base_batch_size * self.delay_multiple,
-                self.max_batch_size,
-                self.min_sets_remaining,
-            )
-        else:
-            return self.base_batch_size
+    # @property
+    # def batch_size(self):
+    #     if not self.throttling:
+    #         return min(
+    #             self.base_batch_size * self.delay_multiple,
+    #             self.max_batch_size,
+    #             self.min_sets_remaining,
+    #         )
+    #     else:
+    #         return self.base_batch_size
 
     @property
     def done(self):
@@ -103,12 +128,11 @@ class UploadStatus:
             keys = [
                 "target_count",
                 "confirmed_count_in_org",
-                "batch_size",
                 "sets_being_generated",
                 "sets_queued",
                 "sets_being_loaded",
                 "sets_finished",
-                "wait_for_org_count_to_catch_up",
+                # "wait_for_org_count_to_catch_up",
             ]
         return "\n" + "\n".join(
             f"{a.replace('_', ' ').title()}: {getattr(self, a):,}"
@@ -199,7 +223,10 @@ class Snowfakery(BaseSalesforceApiTask):
 
         upload_status = self.generate_upload_status()
 
-        # TODO: how can I ensure I'm making forward progress
+        batches = generate_batches(
+            self.num_records, BASE_BATCH_SIZE, self.max_batch_size
+        )
+
         while not upload_status.done:
             self.logger.info(
                 "\n********** PROGRESS *********",
@@ -216,7 +243,7 @@ class Snowfakery(BaseSalesforceApiTask):
                 self.logger.info(f"Batch size multiple={self.delay_multiple}")
             else:
                 generator_workers = self._spawn_transient_generator_workers(
-                    generator_workers, upload_status, template_path
+                    generator_workers, upload_status, template_path, batches
                 )
             self.logger.info(f"Generator Workers: {len(generator_workers)}")
             self.logger.info(f"Upload Workers: {len(upload_workers)}")
@@ -228,10 +255,14 @@ class Snowfakery(BaseSalesforceApiTask):
             time.sleep(3)
             upload_status = self.generate_upload_status()
 
-        for worker in generator_workers:
-            worker.join()
-        for worker in upload_workers:
-            worker.join()
+        workers = generator_workers + upload_workers
+
+        while workers:
+            time.sleep(10)
+            workers = [worker for worker in workers if worker.is_alive()]
+            print(f"Waiting for {len(workers)} to finish up.")
+            for k, v in self.get_org_record_counts().items():
+                self.logger.info(f"      COUNT: {k}: {v:,}")
 
         self.logger.info(self.generate_upload_status()._display())
         return upload_status
@@ -282,7 +313,11 @@ class Snowfakery(BaseSalesforceApiTask):
         )
 
     def _spawn_transient_generator_workers(
-        self, workers: T.Sequence, upload_status: UploadStatus, template_path: Path
+        self,
+        workers: T.Sequence,
+        upload_status: UploadStatus,
+        template_path: Path,
+        batches: T.Sequence,
     ):
         workers = [worker for worker in workers if worker.is_alive()]
 
@@ -292,9 +327,13 @@ class Snowfakery(BaseSalesforceApiTask):
 
         for idx in range(new_workers):
             self.job_counter += 1
+            batch_size, total = next(batches, (None, None))
+            if not batch_size:
+                break
 
+            print("Generating", batch_size)
             data_generator = self.data_generator_worker(
-                upload_status,
+                batch_size,
                 template_path,
                 self.job_counter,
             )
@@ -304,10 +343,7 @@ class Snowfakery(BaseSalesforceApiTask):
             workers.append(data_generator)
         return workers
 
-    def data_generator_worker(
-        self, upload_status: UploadStatus, template_path: Path, idx: int
-    ):
-        batch_size = upload_status.batch_size
+    def data_generator_worker(self, batch_size: int, template_path: Path, idx: int):
         working_dir = self.generators_path / (str(idx) + "_" + str(batch_size))
         shutil.copytree(template_path, working_dir)
         assert working_dir.exists()
@@ -322,7 +358,7 @@ class Snowfakery(BaseSalesforceApiTask):
             "generator_yaml": str(self.recipe),
             "database_url": database_url,
             "working_directory": working_dir,
-            "num_records": upload_status.batch_size,
+            "num_records": batch_size,
             "reset_oids": False,
             "continuation_file": f"{working_dir}/continuation.yml",
             "num_records_tablename": self.num_records_tablename,
@@ -357,8 +393,6 @@ class Snowfakery(BaseSalesforceApiTask):
         )
         subtask()
 
-    from pysnooper import snoop
-
     def sets_in_dir(self, dir):
         idx_and_counts = (subdir.name.split("_") for subdir in dir.glob("*_*"))
         return sum(int(count) for (idx, count) in idx_and_counts)
@@ -376,7 +410,7 @@ class Snowfakery(BaseSalesforceApiTask):
                 1 for dir in self.queue_for_loading_directory.glob("*_*")
             ),
             sets_finished=self.sets_in_dir(self.finished_directory),
-            base_batch_size=500,  # FIXME
+            base_batch_size=BASE_BATCH_SIZE,  # FIXME
             user_max_num_uploader_workers=self.num_uploader_workers,
             user_max_num_generator_workers=self.num_generator_workers,
             max_batch_size=self.max_batch_size,
