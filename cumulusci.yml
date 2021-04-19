@@ -23,7 +23,7 @@ tasks:
             # num_records: 45_000
             recipe: datasets/basic-salesforce.recipe.yml
             num_records_tablename: Account
-            subtask_type: process
+            subtask_type: thread
 
     disable_duplicate_rules:
         class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
@@ -54,6 +54,11 @@ flows:
 
             3:
                 task: assign_permission_sets
+                options:
+                    api_names: CumulusCI_Bulk_Data
+
+            4:
+                task: update_admin_profile
                 options:
                     api_names: CumulusCI_Bulk_Data
 
