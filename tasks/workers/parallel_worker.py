@@ -6,14 +6,12 @@ import shutil
 from cumulusci.core.exceptions import ServiceNotConfigured
 
 
-from cumulusci.core.config import TaskConfig, BaseProjectConfig, OrgConfig
+from cumulusci.core.config import TaskConfig, BaseProjectConfig, UniversalConfig
 
 
 # weird things happen when I try to use a DataClass
 class ParallelWorker:
     TaskClass: type
-    project_config: BaseProjectConfig
-    org_config: OrgConfig
     spawn_class: type
     task_options: T.Mapping[str, T.Any]
     working_dir: Path
@@ -22,7 +20,7 @@ class ParallelWorker:
     redirect_logging: bool
     process: object = None
 
-    def __init__(self, **kwargs):
+    def __init__(self, project_config, org_config, **kwargs):
         for k, v in kwargs.items():
             assert k in self.__class__.__annotations__, (
                 k,
@@ -32,12 +30,32 @@ class ParallelWorker:
 
         for k in self.__class__.__annotations__:
             assert hasattr(self, k), f"Did not specify {k}"
+        self.subtask = self._init_task(project_config, org_config)
+
+    def _init_task(self, parent_project_config, org_config):
+        project_config = BaseProjectConfig(UniversalConfig(), {})
+        project_config.set_keychain(
+            self._create_subprocess_keychain(parent_project_config)
+        )
+
+        subtask_config = TaskConfig({"options": self.task_options})
+
+        subtask = self.TaskClass(
+            project_config=project_config,
+            task_config=subtask_config,
+            org_config=org_config,
+            logger=None,
+        )
+
+        return subtask
+
+    def _create_subprocess_keychain(self, project_config):
         try:
-            self.connected_app = self.project_config.keychain.get_service(
-                "connected_app"
-            )
+            connected_app = project_config.keychain.get_service("connected_app")
         except ServiceNotConfigured:
-            self.connected_app = None
+            connected_app = None
+
+        return SubprocessKeyChain(connected_app)
 
     def start(self):
         self.process = self.spawn_class(target=self.run)
@@ -50,26 +68,12 @@ class ParallelWorker:
         return self.process.join()
 
     def run(self):
-        subtask_config = TaskConfig({"options": self.task_options})
         with self.make_logger(
             self.working_dir / f"{self.TaskClass.__name__}.log", self.redirect_logging
         ) as logger:
-            subtask = self.TaskClass(
-                project_config=self.project_config,
-                task_config=subtask_config,
-                org_config=self.org_config,
-                logger=logger,
-            )
+            self.subtask.logger = logger
             try:
-
-                def get_connected_app(name):
-                    if name == "connected_app":
-                        return self.connected_app
-                    else:
-                        raise ServiceNotConfigured(name)
-
-                subtask.project_config.keychain.get_service = get_connected_app
-                subtask()
+                self.subtask()
                 self.output_dir.mkdir(exist_ok=True)
                 shutil.move(str(self.working_dir), str(self.output_dir))
                 logger.info("SubTask Success!")
@@ -96,3 +100,13 @@ class ParallelWorker:
                 logger.addHandler(handler)
                 logger.propagate = False
                 yield logger
+
+
+class SubprocessKeyChain(T.NamedTuple):
+    connected_app: T.Any
+
+    def get_service(self, name):
+        if name == "connected_app":
+            return self.connected_app
+
+        raise ServiceNotConfigured(name)
