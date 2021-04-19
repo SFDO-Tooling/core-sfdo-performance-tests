@@ -1,5 +1,5 @@
-- plugin: snowfakery.standard_plugins.base64.Base64
-- plugin: snowfakery.standard_plugins.file.File
+- plugin: datasets.plugins.base64.Base64
+- plugin: datasets.plugins.file.File
 
 # Hard-coded and just_once objects
 - object: Account

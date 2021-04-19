@@ -33,7 +33,7 @@ class ParallelWorker:
         self.subtask = self._init_task(project_config, org_config)
 
     def _init_task(self, parent_project_config, org_config):
-        project_config = BaseProjectConfig(UniversalConfig(), {})
+        project_config = parent_project_config.construct_subproject_config(repo_info={"root": parent_project_config.repo_root})
         project_config.set_keychain(
             self._create_subprocess_keychain(parent_project_config)
         )
