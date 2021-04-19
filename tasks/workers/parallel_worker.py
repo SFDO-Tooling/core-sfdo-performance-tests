@@ -3,6 +3,7 @@ from pathlib import Path
 import logging
 from contextlib import contextmanager
 import shutil
+from cumulusci.core.exceptions import ServiceNotConfigured
 
 
 from cumulusci.core.config import TaskConfig, BaseProjectConfig, OrgConfig
@@ -16,18 +17,27 @@ class ParallelWorker:
     spawn_class: type
     task_options: T.Mapping[str, T.Any]
     working_dir: Path
-    output_dir: "DelayedPath"       # noQA
+    output_dir: "DelayedPath"  # noQA
     failures_dir: Path
     redirect_logging: bool
     process: object = None
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
-            assert k in self.__class__.__annotations__, (k, self.__class__.__annotations__)
+            assert k in self.__class__.__annotations__, (
+                k,
+                self.__class__.__annotations__,
+            )
             setattr(self, k, v)
 
         for k in self.__class__.__annotations__:
             assert hasattr(self, k), f"Did not specify {k}"
+        try:
+            self.connected_app = self.project_config.keychain.get_service(
+                "connected_app"
+            )
+        except ServiceNotConfigured:
+            self.connected_app = None
 
     def start(self):
         self.process = self.spawn_class(target=self.run)
@@ -41,7 +51,9 @@ class ParallelWorker:
 
     def run(self):
         subtask_config = TaskConfig({"options": self.task_options})
-        with self.make_logger(self.working_dir / f"{self.TaskClass.__name__}.log", self.redirect_logging) as logger:
+        with self.make_logger(
+            self.working_dir / f"{self.TaskClass.__name__}.log", self.redirect_logging
+        ) as logger:
             subtask = self.TaskClass(
                 project_config=self.project_config,
                 task_config=subtask_config,
@@ -49,9 +61,17 @@ class ParallelWorker:
                 logger=logger,
             )
             try:
+
+                def get_connected_app(name):
+                    if name == "connected_app":
+                        return self.connected_app
+                    else:
+                        raise ServiceNotConfigured(name)
+
+                subtask.project_config.keychain.get_service = get_connected_app
                 subtask()
                 self.output_dir.mkdir(exist_ok=True)
-                shutil.move(str(self.working_dir), str(self.output_dir))                
+                shutil.move(str(self.working_dir), str(self.output_dir))
                 logger.info("SubTask Success!")
             except BaseException as e:
                 logger.info(f"Failure detected : {e}")
@@ -74,4 +94,5 @@ class ParallelWorker:
                 handler.setLevel(logging.DEBUG)
                 handler.setFormatter(formatter)
                 logger.addHandler(handler)
+                logger.propagate = False
                 yield logger

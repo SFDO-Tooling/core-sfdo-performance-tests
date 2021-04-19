@@ -23,7 +23,7 @@ tasks:
             # num_records: 45_000
             recipe: datasets/basic-salesforce.recipe.yml
             num_records_tablename: Account
-            subtask_type: thread
+            subtask_type: process
 
     disable_duplicate_rules:
         class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
