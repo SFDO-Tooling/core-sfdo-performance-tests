@@ -231,7 +231,7 @@ class Snowfakery(BaseSalesforceApiTask):
             self.logger.info(
                 "\n********** PROGRESS *********",
             )
-            self.logger.info(upload_status._display(detailed=True))
+            self.logger.info(upload_status._display(detailed=False))
             upload_workers = self._spawn_transient_upload_workers(upload_workers)
             generator_workers = [
                 worker for worker in generator_workers if worker.is_alive()
@@ -331,7 +331,6 @@ class Snowfakery(BaseSalesforceApiTask):
             if not batch_size:
                 break
 
-            print("Generating", batch_size)
             data_generator = self.data_generator_worker(
                 batch_size,
                 template_path,

@@ -20,7 +20,7 @@ tasks:
     snowfakery:
         class_path: tasks.snowscale.Snowfakery
         options:
-            num_records: 42_000
+            num_records: 25_000
             recipe: datasets/basic-salesforce.recipe.yml
             num_records_tablename: Account
             subtask_type: process
@@ -73,7 +73,7 @@ flows:
             3:
                 task: snowfakery
                 options:
-                    num_records: 40_000
+                    num_records: 25_000
 
             4:
                 task: test_performance_demo

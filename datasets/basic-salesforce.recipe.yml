@@ -30,8 +30,8 @@
       fake: street_address
     BillingCity:
       fake: city
-    # BillingState:   # org-specific problem?
-    #   fake: state
+    BillingState:
+      fake: state
     BillingPostalCode:
       fake: postalcode
     BillingCountry: Canada
@@ -39,12 +39,12 @@
       fake: street_address
     ShippingCity:
       fake: city
-    # ShippingState:
-    #   fake: state
+    ShippingState:
+      fake: state
     ShippingPostalCode:
       fake: postalcode
-    # ShippingCountry:
-    #   fake: country
+    ShippingCountry:
+      fake: country
     Phone:
       fake: phone_number
     Fax:
