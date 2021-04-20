@@ -59,8 +59,6 @@ flows:
 
             4:
                 task: update_admin_profile
-                options:
-                    api_names: CumulusCI_Bulk_Data
 
     test_performance_scratch:
         steps:
@@ -70,12 +68,13 @@ flows:
             2:
                 task: deploy_post
 
-            3:
-                task: snowfakery
-                options:
-                    num_records: 25_000
-
             4:
+                task: snowfakery
+
+            5:
+                task: update_admin_profile
+
+            6:
                 task: test_performance_demo
 
     test_performance_LDV:
