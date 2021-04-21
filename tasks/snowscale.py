@@ -10,7 +10,7 @@ from tempfile import mkdtemp
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Thread
-from multiprocessing import Process
+from multiprocessing import get_context
 
 from sqlalchemy import MetaData, create_engine
 
@@ -178,10 +178,14 @@ class Snowfakery(BaseSalesforceApiTask):
         self.num_records = int(self.options.get("num_records"))
         self.unified_logging = self.options.get("unified_logging")
         subtask_type_name = (self.options.get("subtask_type") or "thread").lower()
+
         if subtask_type_name == "thread":
             self.subtask_type = Thread
+            self.logger.info("Snowfakery is using threads")
         elif subtask_type_name == "process":
-            self.subtask_type = Process
+            context = get_context('spawn')
+            self.logger.info("Snowfakery is using spawned sub-processes")
+            self.subtask_type = context.Process
         else:
             assert 0
         self.infinite_buffer = self.options.get("infinite_buffer")
