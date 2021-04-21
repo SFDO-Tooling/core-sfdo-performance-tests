@@ -2,6 +2,7 @@ import shutil
 import time
 from datetime import timedelta
 from cumulusci.core.utils import format_duration
+from cumulusci.core.exceptions import BulkDataException
 import typing as T
 
 from pathlib import Path  # test this on Windows
@@ -25,6 +26,7 @@ from cumulusci.tasks.bulkdata.generate_from_yaml import GenerateDataFromYaml
 
 
 BASE_BATCH_SIZE = 500  # FIXME
+ERROR_THRESHOLD = 3    # FIXME
 
 
 def clip(value, min_=None, max_=None):
@@ -60,6 +62,7 @@ class UploadStatus:
     user_max_num_generator_workers: int
     max_batch_size: int
     elapsed_seconds: int
+    sets_failed: int
 
     @property
     def max_needed_generators_to_fill_queue(self):
@@ -128,11 +131,11 @@ class UploadStatus:
             keys = [
                 "target_count",
                 "confirmed_count_in_org",
+                "sets_finished",
                 "sets_being_generated",
                 "sets_queued",
                 "sets_being_loaded",
-                "sets_finished",
-                # "wait_for_org_count_to_catch_up",
+                "sets_failed",
             ]
         return "\n" + "\n".join(
             f"{a.replace('_', ' ').title()}: {getattr(self, a):,}"
@@ -158,6 +161,7 @@ class Snowfakery(BaseSalesforceApiTask):
         "max_batch_size": {},  # TODO Impl, Docs
         "unified_logging": {},  # TODO RETHINK
         "subtask_type": {},  # TODO: RETHINK
+        "infinite_buffer": {},  # ONLY FOR BENCHMARKS
     }
 
     def _validate_options(self):
@@ -180,6 +184,7 @@ class Snowfakery(BaseSalesforceApiTask):
             self.subtask_type = Process
         else:
             assert 0
+        self.infinite_buffer = self.options.get("infinite_buffer")
 
     def _run_task(self):
         self.start_time = time.time()
@@ -237,9 +242,11 @@ class Snowfakery(BaseSalesforceApiTask):
                 worker for worker in generator_workers if worker.is_alive()
             ]
 
-            if upload_status.max_needed_generators_to_fill_queue == 0:
+            if (
+                upload_status.max_needed_generators_to_fill_queue == 0
+                and not self.infinite_buffer
+            ):
                 self.logger.info("WAITING FOR UPLOAD QUEUE TO CATCH UP")
-                self.delay_multiple *= 2
                 self.logger.info(f"Batch size multiple={self.delay_multiple}")
             else:
                 generator_workers = self._spawn_transient_generator_workers(
@@ -251,6 +258,11 @@ class Snowfakery(BaseSalesforceApiTask):
             for k, v in self.get_org_record_counts().items():
                 self.logger.info(f"      COUNT: {k}: {v:,}")
             self.logger.info(f"Working Directory: {tempdir}")
+            if upload_status.sets_failed:
+                self.log_failures()
+
+            if upload_status.sets_failed > ERROR_THRESHOLD:
+                raise BulkDataException(f"Errors exceeded threshold: `{upload_status.sets_failed}` vs `{ERROR_THRESHOLD}`")
 
             time.sleep(3)
             upload_status = self.generate_upload_status()
@@ -264,8 +276,15 @@ class Snowfakery(BaseSalesforceApiTask):
             for k, v in self.get_org_record_counts().items():
                 self.logger.info(f"      COUNT: {k}: {v:,}")
 
-        self.logger.info(self.generate_upload_status()._display())
+        self.logger.info(self.generate_upload_status()._display(detailed=True))
         return upload_status
+
+    def log_failures(self):
+        failures = self.failures_dir.glob("*/exception.txt")
+        for failure in failures:
+            text = failure.read_text()
+            self.logger.info(f"Failure froom worker: {failure}")
+            self.logger.info(text)
 
     def _spawn_transient_upload_workers(self, upload_workers):
         upload_workers = [worker for worker in upload_workers if worker.is_alive()]
@@ -414,6 +433,7 @@ class Snowfakery(BaseSalesforceApiTask):
             user_max_num_generator_workers=self.num_generator_workers,
             max_batch_size=self.max_batch_size,
             elapsed_seconds=int(time.time() - self.start_time),
+            sets_failed=self.sets_in_dir(self.failures_dir),
         )
 
     def get_org_record_count_for_sobject(self):

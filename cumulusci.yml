@@ -49,6 +49,7 @@ flows:
 
             2:
                 task: create_bulk_data_permission_set
+                ignore_failure: True
                 options:
                     user_permissions: PermissionsBulkApiHardDelete
 
@@ -56,8 +57,9 @@ flows:
                 task: assign_permission_sets
                 options:
                     api_names: CumulusCI_Bulk_Data
-
             4:
+                task: deploy_post
+            5:
                 task: update_admin_profile
 
     test_performance_scratch:

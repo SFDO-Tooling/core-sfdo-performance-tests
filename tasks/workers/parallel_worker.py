@@ -6,7 +6,7 @@ import shutil
 from cumulusci.core.exceptions import ServiceNotConfigured
 
 
-from cumulusci.core.config import TaskConfig, BaseProjectConfig, UniversalConfig
+from cumulusci.core.config import TaskConfig
 
 
 # weird things happen when I try to use a DataClass
@@ -74,15 +74,20 @@ class ParallelWorker:
             self.subtask.logger = logger
             try:
                 self.subtask()
-                self.output_dir.mkdir(exist_ok=True)
-                shutil.move(str(self.working_dir), str(self.output_dir))
-                logger.info("SubTask Success!")
             except BaseException as e:
-                logger.info(f"Failure detected : {e}")
+                logger.info(f"Failure detected: {e}")
                 exception_file = self.working_dir / "exception.txt"
                 exception_file.write_text(str(e))
                 self.failures_dir.mkdir(exist_ok=True)
                 shutil.move(str(self.working_dir), str(self.failures_dir))
+                raise
+
+            try:
+                self.output_dir.mkdir(exist_ok=True)
+                shutil.move(str(self.working_dir), str(self.output_dir))
+                logger.info("SubTask Success!")
+            except BaseException:
+                # TODO: Think more about this
                 raise
 
     @contextmanager
