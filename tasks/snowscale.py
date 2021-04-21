@@ -42,7 +42,7 @@ def generate_batches(target: int, min_batch_size, max_batch_size):
     batch_size = min_batch_size
     max_batch_size = min(max_batch_size, int(target // 20))
     while count < target:
-        batch_size = int(min(batch_size * 1.5, max_batch_size, target - count))
+        batch_size = int(min(batch_size * 1.1, max_batch_size, target - count))
         count += batch_size
         yield batch_size, count
 
