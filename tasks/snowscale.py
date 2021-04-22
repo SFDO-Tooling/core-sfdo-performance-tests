@@ -183,7 +183,7 @@ class Snowfakery(BaseSalesforceApiTask):
             self.subtask_type = Thread
             self.logger.info("Snowfakery is using threads")
         elif subtask_type_name == "process":
-            context = get_context()
+            context = get_context("spawn")
             self.logger.info(f"Snowfakery is using {context.get_start_method()}ed sub-processes")
             self.subtask_type = context.Process
         else:
