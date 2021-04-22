@@ -51,9 +51,11 @@ class WorkerConfig:
                 self.org_config.config,
                 self.org_config.name,
             ),
-            "connected_app": self.connected_app.config,
+            "connected_app": self.connected_app.config if self.connected_app else None,
             "redirect_logging": self.redirect_logging,
-            "project_config": {"project": {"package": self.project_config.config["project"]["package"]}},
+            "project_config": {
+                "project": {"package": self.project_config.config["project"]["package"]}
+            },
         }
 
     @staticmethod
@@ -76,7 +78,9 @@ class WorkerConfig:
             working_dir=Path(worker_config_json["working_dir"]),
             output_dir=Path(worker_config_json["output_dir"]),
             failures_dir=Path(worker_config_json["failures_dir"]),
-            connected_app=ServiceConfig(worker_config_json["connected_app"]),
+            connected_app=ServiceConfig(worker_config_json["connected_app"])
+            if worker_config_json["connected_app"]
+            else None,
             redirect_logging=worker_config_json["connected_app"],
         )
 
@@ -113,9 +117,7 @@ class TaskWorker:
     def run(self):
         with self.make_logger() as logger:
             try:
-                self.subtask = self._make_task(
-                    self.task_class, logger
-                )
+                self.subtask = self._make_task(self.task_class, logger)
                 self.subtask()
             except BaseException as e:
                 logger.info(f"Failure detected: {e}")
@@ -158,13 +160,15 @@ def simplify(x):
         return str(x)
     if hasattr(x, "isoformat"):
         return x.isoformat()
-    print("Unknown type", type(x))    # FIXME
+    print("Unknown type", type(x))  # FIXME
 
 
 class ParallelWorker:
     def __init__(self, spawn_class, **kwargs):
         self.spawn_class = spawn_class
-        self.worker_config = json.dumps(WorkerConfig(**kwargs).as_json(), default=simplify)
+        self.worker_config = json.dumps(
+            WorkerConfig(**kwargs).as_json(), default=simplify
+        )
 
     def start(self):
         self.process = self.spawn_class(
@@ -181,10 +185,10 @@ class ParallelWorker:
 
 
 class SubprocessKeyChain(T.NamedTuple):
-    connected_app: T.Any
+    connected_app: T.Any = None
 
     def get_service(self, name):
-        if name == "connected_app":
+        if name == "connected_app" and self.connected_app:
             return self.connected_app
 
         raise ServiceNotConfigured(name)

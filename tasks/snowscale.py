@@ -2,7 +2,7 @@ import shutil
 import time
 from datetime import timedelta
 from cumulusci.core.utils import format_duration
-from cumulusci.core.exceptions import BulkDataException
+from cumulusci.core.exceptions import BulkDataException, ServiceNotConfigured
 import typing as T
 
 from pathlib import Path  # test this on Windows
@@ -378,10 +378,15 @@ class Snowfakery(BaseSalesforceApiTask):
         return self._make_worker(GenerateDataFromYaml, options, working_dir, self.queue_for_loading_directory)
 
     def _make_worker(self, task_class, options, working_dir, output_dir):
+        try:
+            connected_app = self.project_config.keychain.get_service("connected_app")
+        except ServiceNotConfigured:
+            connected_app = None
+
         return ParallelWorker(
             spawn_class=self.subtask_type,
             task_class=task_class,
-            connected_app=self.project_config.keychain.get_service("connected_app"),
+            connected_app=connected_app,
             org_config=self.org_config,
             project_config=self.project_config,
             task_options=options,
