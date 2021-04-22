@@ -39,7 +39,7 @@ class WorkerConfig:
         for k in self.__class__.__annotations__:
             assert hasattr(self, k), f"Did not specify {k}"
 
-    def as_json(self):
+    def as_dict(self):
         return {
             "task_class": dotted_class_name(self.task_class),
             "org_config_class": dotted_class_name(self.org_config.__class__),
@@ -59,7 +59,7 @@ class WorkerConfig:
         }
 
     @staticmethod
-    def from_json(worker_config_json):
+    def from_dict(worker_config_json):
         org_config_class = import_global(worker_config_json["org_config_class"])
         org_config = org_config_class(*worker_config_json["org_config"])
 
@@ -81,7 +81,7 @@ class WorkerConfig:
             connected_app=ServiceConfig(worker_config_json["connected_app"])
             if worker_config_json["connected_app"]
             else None,
-            redirect_logging=worker_config_json["connected_app"],
+            redirect_logging=worker_config_json["redirect_logging"],
         )
 
 
@@ -90,9 +90,9 @@ def dotted_class_name(cls):
 
 
 class TaskWorker:
-    def __init__(self, worker_config_json):
-        self.worker_config = WorkerConfig.from_json(worker_config_json)
-        self.redirect_logging = worker_config_json["redirect_logging"]
+    def __init__(self, worker_dict):
+        self.worker_config = WorkerConfig.from_dict(worker_dict)
+        self.redirect_logging = worker_dict["redirect_logging"]
 
     def __getattr__(self, name):
         return getattr(self.worker_config, name)
@@ -150,8 +150,8 @@ class TaskWorker:
             yield logger
 
 
-def run_task_in_worker(worker_json):
-    worker = TaskWorker(json.loads(worker_json))
+def run_task_in_worker(worker_dict):
+    worker = TaskWorker(worker_dict)
     return worker.run()
 
 
@@ -166,16 +166,19 @@ def simplify(x):
 class ParallelWorker:
     def __init__(self, spawn_class, **kwargs):
         self.spawn_class = spawn_class
-        self.worker_config = json.dumps(
-            WorkerConfig(**kwargs).as_json(), default=simplify
-        )
+        self.worker_config = WorkerConfig(**kwargs)
+
+    def _validate_worker_config_is_simple(self, worker_config):
+        assert json.dumps(worker_config, default=simplify)
 
     def start(self):
+        dct = self.worker_config.as_dict()
+        self._validate_worker_config_is_simple(dct)
+
         self.process = self.spawn_class(
-            target=run_task_in_worker, args=[self.worker_config]
+            target=run_task_in_worker, args=[dct]
         )
         self.process.start()
-        # run_task_in_worker(self.worker_config)
 
     def is_alive(self):
         return self.process.is_alive()
