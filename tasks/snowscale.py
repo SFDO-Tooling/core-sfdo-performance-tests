@@ -183,8 +183,8 @@ class Snowfakery(BaseSalesforceApiTask):
             self.subtask_type = Thread
             self.logger.info("Snowfakery is using threads")
         elif subtask_type_name == "process":
-            context = get_context('spawn')
-            self.logger.info("Snowfakery is using spawned sub-processes")
+            context = get_context()
+            self.logger.info(f"Snowfakery is using {context.get_start_method()}ed sub-processes")
             self.subtask_type = context.Process
         else:
             assert 0
@@ -287,7 +287,7 @@ class Snowfakery(BaseSalesforceApiTask):
         failures = self.failures_dir.glob("*/exception.txt")
         for failure in failures:
             text = failure.read_text()
-            self.logger.info(f"Failure froom worker: {failure}")
+            self.logger.info(f"Failure from worker: {failure}")
             self.logger.info(text)
 
     def _spawn_transient_upload_workers(self, upload_workers):
@@ -322,18 +322,7 @@ class Snowfakery(BaseSalesforceApiTask):
             "reset_oids": False,
             "database_url": database_url,
         }
-
-        return ParallelWorker(
-            TaskClass=LoadData,
-            project_config=self.project_config,
-            org_config=self.org_config,
-            spawn_class=self.subtask_type,
-            task_options=options,
-            working_dir=working_dir,
-            output_dir=self.finished_directory,
-            redirect_logging=not self.unified_logging,
-            failures_dir=self.failures_dir,
-        )
+        return self._make_worker(LoadData, options, working_dir, self.finished_directory)
 
     def _spawn_transient_generator_workers(
         self,
@@ -368,6 +357,7 @@ class Snowfakery(BaseSalesforceApiTask):
     def data_generator_worker(self, batch_size: int, template_path: Path, idx: int):
         working_dir = self.generators_path / (str(idx) + "_" + str(batch_size))
         shutil.copytree(template_path, working_dir)
+
         assert working_dir.exists()
         database_file = working_dir / "generated_data.db"
         assert database_file.exists()
@@ -379,33 +369,37 @@ class Snowfakery(BaseSalesforceApiTask):
         options = {
             "generator_yaml": str(self.recipe),
             "database_url": database_url,
-            "working_directory": working_dir,
+            "working_directory": str(working_dir),
             "num_records": batch_size,
             "reset_oids": False,
             "continuation_file": f"{working_dir}/continuation.yml",
             "num_records_tablename": self.num_records_tablename,
         }
+        return self._make_worker(GenerateDataFromYaml, options, working_dir, self.queue_for_loading_directory)
+
+    def _make_worker(self, task_class, options, working_dir, output_dir):
         return ParallelWorker(
-            TaskClass=GenerateDataFromYaml,
-            project_config=self.project_config,
-            org_config=self.org_config,
             spawn_class=self.subtask_type,
+            task_class=task_class,
+            connected_app=self.project_config.keychain.get_service("connected_app"),
+            org_config=self.org_config,
+            project_config=self.project_config,
             task_options=options,
             working_dir=working_dir,
-            output_dir=self.queue_for_loading_directory,
+            output_dir=output_dir,
             redirect_logging=not self.unified_logging,
             failures_dir=self.failures_dir,
         )
 
     def _invoke_subtask(
         self,
-        TaskClass: type,
+        task_class: type,
         subtask_options: T.Mapping[str, T.Any],
         working_dir: Path,
         redirect_logging: bool,
     ):
         subtask_config = TaskConfig({"options": subtask_options})
-        subtask = TaskClass(
+        subtask = task_class(
             project_config=self.project_config,
             task_config=subtask_config,
             org_config=self.org_config,

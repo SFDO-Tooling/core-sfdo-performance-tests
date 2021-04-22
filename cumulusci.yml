@@ -71,10 +71,10 @@ flows:
                 task: deploy_post
 
             4:
-                task: snowfakery
+                task: update_admin_profile
 
             5:
-                task: update_admin_profile
+                task: snowfakery
 
             6:
                 task: test_performance_demo
