@@ -2,15 +2,13 @@ import shutil
 import time
 from datetime import timedelta
 from cumulusci.core.utils import format_duration
-from cumulusci.core.exceptions import BulkDataException, ServiceNotConfigured
+import cumulusci.core.exceptions as exc
 import typing as T
 
 from pathlib import Path  # test this on Windows
 from tempfile import mkdtemp
 from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Thread
-from multiprocessing import get_context
 
 from sqlalchemy import MetaData, create_engine
 
@@ -26,7 +24,7 @@ from cumulusci.tasks.bulkdata.generate_from_yaml import GenerateDataFromYaml
 
 
 BASE_BATCH_SIZE = 500  # FIXME
-ERROR_THRESHOLD = 3    # FIXME
+ERROR_THRESHOLD = 3  # FIXME
 
 
 def clip(value, min_=None, max_=None):
@@ -56,7 +54,6 @@ class UploadStatus:
     sets_finished: int
     target_count: int
     base_batch_size: int
-    delay_multiple: int
     upload_queue_backlog: int
     user_max_num_uploader_workers: int
     user_max_num_generator_workers: int
@@ -68,57 +65,16 @@ class UploadStatus:
     def max_needed_generators_to_fill_queue(self):
         return max(self.user_max_num_generator_workers - self.upload_queue_backlog, 0)
 
-    # @property
-    # def max_needed_generators_to_fill_org(self):
-    #     if self.done:
-    #         return 0
-    #     else:
-    #         return max(self.min_sets_remaining // self.batch_size, 1)
-
     @property
     def total_needed_generators(self):
         if self.done:
             return 0
         else:
             return 4
-        # if self.wait_for_org_count_to_catch_up:
-        #     return 0
-        # return min(
-        #     self.user_max_num_generator_workers,
-        #     self.max_needed_generators_to_fill_org,
-        #     self.max_needed_generators_to_fill_queue,
-        # )
-
-    # @property
-    # def wait_for_org_count_to_catch_up(self):
-    #     return self.maximum_estimated_sets_so_far > self.target_count
 
     @property
     def total_in_flight(self):
         return self.sets_being_generated + self.sets_queued + self.sets_being_loaded
-
-    # @property
-    # def maximum_estimated_sets_so_far(self):
-    #     return self.confirmed_count_in_org + self.total_in_flight
-
-    # @property
-    # def min_sets_remaining(self):
-    #     return max(0, self.target_count - self.maximum_estimated_sets_so_far)
-
-    # @property
-    # def throttling(self):
-    #     return self.min_sets_remaining < 1
-
-    # @property
-    # def batch_size(self):
-    #     if not self.throttling:
-    #         return min(
-    #             self.base_batch_size * self.delay_multiple,
-    #             self.max_batch_size,
-    #             self.min_sets_remaining,
-    #         )
-    #     else:
-    #         return self.base_batch_size
 
     @property
     def done(self):
@@ -180,14 +136,13 @@ class Snowfakery(BaseSalesforceApiTask):
         subtask_type_name = (self.options.get("subtask_type") or "thread").lower()
 
         if subtask_type_name == "thread":
-            self.subtask_type = Thread
+            self.subtask_type = ParallelWorker.Thread
             self.logger.info("Snowfakery is using threads")
         elif subtask_type_name == "process":
-            context = get_context("spawn")
-            self.logger.info(f"Snowfakery is using {context.get_start_method()}ed sub-processes")
-            self.subtask_type = context.Process
+            self.subtask_type = ParallelWorker.Process
         else:
-            assert 0
+            raise exc.TaskOptionsError(f"No task type named {subtask_type_name}")
+
         self.infinite_buffer = self.options.get("infinite_buffer")
 
     def _run_task(self):
@@ -195,7 +150,6 @@ class Snowfakery(BaseSalesforceApiTask):
         self.max_batch_size = self.options.get("max_batch_size", 250_000)
         self.recipe = Path(self.options.get("recipe"))
         self.job_counter = 0
-        self.delay_multiple = 1
 
         working_directory = self.options.get("working_directory")
         if working_directory:
@@ -251,7 +205,6 @@ class Snowfakery(BaseSalesforceApiTask):
                 and not self.infinite_buffer
             ):
                 self.logger.info("WAITING FOR UPLOAD QUEUE TO CATCH UP")
-                self.logger.info(f"Batch size multiple={self.delay_multiple}")
             else:
                 generator_workers = self._spawn_transient_generator_workers(
                     generator_workers, upload_status, template_path, batches
@@ -266,7 +219,9 @@ class Snowfakery(BaseSalesforceApiTask):
                 self.log_failures()
 
             if upload_status.sets_failed > ERROR_THRESHOLD:
-                raise BulkDataException(f"Errors exceeded threshold: `{upload_status.sets_failed}` vs `{ERROR_THRESHOLD}`")
+                raise exc.BulkDataException(
+                    f"Errors exceeded threshold: `{upload_status.sets_failed}` vs `{ERROR_THRESHOLD}`"
+                )
 
             time.sleep(3)
             upload_status = self.generate_upload_status()
@@ -322,7 +277,9 @@ class Snowfakery(BaseSalesforceApiTask):
             "reset_oids": False,
             "database_url": database_url,
         }
-        return self._make_worker(LoadData, options, working_dir, self.finished_directory)
+        return self._make_worker(
+            LoadData, options, working_dir, self.finished_directory
+        )
 
     def _spawn_transient_generator_workers(
         self,
@@ -375,12 +332,14 @@ class Snowfakery(BaseSalesforceApiTask):
             "continuation_file": f"{working_dir}/continuation.yml",
             "num_records_tablename": self.num_records_tablename,
         }
-        return self._make_worker(GenerateDataFromYaml, options, working_dir, self.queue_for_loading_directory)
+        return self._make_worker(
+            GenerateDataFromYaml, options, working_dir, self.queue_for_loading_directory
+        )
 
     def _make_worker(self, task_class, options, working_dir, output_dir):
         try:
             connected_app = self.project_config.keychain.get_service("connected_app")
-        except ServiceNotConfigured:
+        except exc.ServiceNotConfigured:
             connected_app = None
 
         return ParallelWorker(
@@ -424,7 +383,6 @@ class Snowfakery(BaseSalesforceApiTask):
             target_count=self.num_records,
             sets_being_generated=self.sets_in_dir(self.generators_path),
             sets_queued=self.sets_in_dir(self.queue_for_loading_directory),
-            delay_multiple=self.delay_multiple,
             # note that these may count as already imported in the org
             sets_being_loaded=self.sets_in_dir(self.loaders_path),
             upload_queue_backlog=sum(
@@ -519,7 +477,6 @@ def test():
     u = UploadStatus(
         base_batch_size=5000,
         confirmed_count_in_org=20000,
-        delay_multiple=1,
         sets_being_generated=5000,
         sets_being_loaded=20000,
         sets_queued=0,
@@ -533,7 +490,6 @@ def test():
     u = UploadStatus(
         base_batch_size=5000,
         confirmed_count_in_org=0,
-        delay_multiple=1,
         sets_being_generated=5000,
         sets_being_loaded=20000,
         sets_queued=0,
@@ -547,7 +503,6 @@ def test():
     u = UploadStatus(
         base_batch_size=5000,
         confirmed_count_in_org=0,
-        delay_multiple=1,
         sets_being_generated=5000,
         sets_being_loaded=15000,
         sets_queued=0,
@@ -561,7 +516,6 @@ def test():
     u = UploadStatus(
         base_batch_size=5000,
         confirmed_count_in_org=29000,
-        delay_multiple=1,
         sets_being_generated=0,
         sets_being_loaded=0,
         sets_queued=0,
@@ -575,7 +529,6 @@ def test():
     u = UploadStatus(
         base_batch_size=5000,
         confirmed_count_in_org=4603,
-        delay_multiple=1,
         sets_being_generated=5000,
         sets_being_loaded=20000,
         sets_queued=0,
@@ -603,7 +556,6 @@ def test():
     u = UploadStatus(
         base_batch_size=500,
         confirmed_count_in_org=39800,
-        delay_multiple=1,
         sets_being_generated=0,
         sets_being_loaded=5000,
         sets_queued=0,

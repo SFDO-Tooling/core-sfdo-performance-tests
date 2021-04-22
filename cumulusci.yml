@@ -42,10 +42,21 @@ tasks:
             hardDelete: True
 
 flows:
-    setup_ldv_org:
+    setup_org_common:
         steps:
             1:
                 task: disable_duplicate_rules
+
+            2:
+                task: deploy_post
+
+            4:
+                task: update_admin_profile
+
+    setup_ldv_org:
+        steps:
+            1: 
+                flow: setup_org_common
 
             2:
                 task: create_bulk_data_permission_set
@@ -57,25 +68,13 @@ flows:
                 task: assign_permission_sets
                 options:
                     api_names: CumulusCI_Bulk_Data
-            4:
-                task: deploy_post
-            5:
-                task: update_admin_profile
 
     test_performance_scratch:
         steps:
             1:
-                task: disable_duplicate_rules
-
-            2:
-                task: deploy_post
-
-            4:
-                task: update_admin_profile
-
+                flow: setup_org_common
             5:
                 task: snowfakery
-
             6:
                 task: test_performance_demo
 
