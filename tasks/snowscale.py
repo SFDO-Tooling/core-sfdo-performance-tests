@@ -125,7 +125,6 @@ class Snowfakery(BaseSalesforceApiTask):
         # long-term solution: psutil.cpu_count(logical=False)
         self.num_generator_workers = int(self.options.get("num_generator_workers", 4))
         self.num_uploader_workers = int(self.options.get("num_uploader_workers", 15))
-        # self.num_uploader_workers = 3  # FIXME
         # Do not store recipe due to MetaDeploy options freezing
         recipe = Path(self.options.get("recipe"))
         assert recipe.exists()
@@ -398,11 +397,11 @@ class Snowfakery(BaseSalesforceApiTask):
         )
 
     def get_org_record_count_for_sobject(self):
+        "This lags quite a bit behind the real numbers."
         sobject = self.options.get("num_records_tablename")
         query = f"select count(Id) from {sobject}"
         count = self.sf.query(query)["records"][0]["expr0"]
         return int(count)
-        # I'll probably need this code when I hit big orgs
 
     def get_org_record_counts(self):
         data = self.sf.restful("limits/recordCount")
