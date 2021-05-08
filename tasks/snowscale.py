@@ -1,5 +1,5 @@
-import shutil
 import time
+import shutil
 from datetime import timedelta
 from cumulusci.core.utils import format_duration
 import cumulusci.core.exceptions as exc
@@ -18,9 +18,10 @@ from cumulusci.tasks.bulkdata.generate_and_load_data_from_yaml import (
 )
 from cumulusci.core.config import TaskConfig
 
-from .workers.parallel_worker import ParallelWorker
 from cumulusci.tasks.bulkdata.load import LoadData
 from cumulusci.tasks.bulkdata.generate_from_yaml import GenerateDataFromYaml
+
+from .parallel_worker_queue import WorkerQueueConfig, WorkerQueue
 
 
 BASE_BATCH_SIZE = 500  # FIXME
@@ -135,10 +136,10 @@ class Snowfakery(BaseSalesforceApiTask):
         subtask_type_name = (self.options.get("subtask_type") or "thread").lower()
 
         if subtask_type_name == "thread":
-            self.subtask_type = ParallelWorker.Thread
+            self.subtask_type = WorkerQueue.Thread
             self.logger.info("Snowfakery is using threads")
         elif subtask_type_name == "process":
-            self.subtask_type = ParallelWorker.Process
+            self.subtask_type = WorkerQueue.Process
         else:
             raise exc.TaskOptionsError(f"No task type named {subtask_type_name}")
 
@@ -160,17 +161,70 @@ class Snowfakery(BaseSalesforceApiTask):
             self.logger.info(f"Working directory is {tempdir}")
             # os.system(f"code {tempdir}")  # FIXME
             assert tempdir.exists()
-            self.generators_path = Path(tempdir) / "1_generators"
-            self.generators_path.mkdir()
-            self.queue_for_loading_directory = Path(tempdir) / "2_load_queue"
-            self.queue_for_loading_directory.mkdir()
-            self.loaders_path = Path(tempdir) / "3_loaders"
-            self.loaders_path.mkdir()
-            self.finished_directory = Path(tempdir, "4_finished")
-            self.failures_dir = Path(tempdir, "failures")
-            upload_status = self._loop(template_path, tempdir)
 
-            elapsed = format_duration(timedelta(seconds=upload_status.elapsed_seconds))
+            try:
+                connected_app = self.project_config.keychain.get_service(
+                    "connected_app"
+                )
+            except exc.ServiceNotConfigured:
+                connected_app = None
+
+            config = WorkerQueueConfig(
+                project_config=self.project_config,
+                org_config=self.org_config,
+                connected_app=connected_app,
+                redirect_logging=True,
+                spawn_class=self.subtask_type,
+                parent_dir=tempdir,
+                name="data_gen",
+                task_class=GenerateDataFromYaml,
+                make_task_options=self.data_generator_opts,
+                queue_size=1,
+                num_workers=4,
+            )
+            data_gen_q = WorkerQueue(config)
+
+            config = WorkerQueueConfig(
+                project_config=self.project_config,
+                org_config=self.org_config,
+                connected_app=connected_app,
+                redirect_logging=True,
+                spawn_class=self.subtask_type,
+                parent_dir=tempdir,
+                name="data_load",
+                task_class=LoadData,
+                make_task_options=self.data_loader_opts,
+                queue_size=15,
+                num_workers=15,
+            )
+            load_data_q = WorkerQueue(config)
+
+            data_gen_q.feeds(load_data_q)
+
+            upload_status = self.generate_upload_status(data_gen_q, load_data_q)
+            print("Working directory", tempdir)
+
+            # idx = 0
+            # while not finished:
+            #     data_gen_q.tick()
+            #     if not data_gen_q.full:
+            #         batch_size = upload_status.batch_size
+            #         idx += 1
+            #         job_dir = self.generator_data_dir(
+            #             idx, template_path, batch_size, tempdir
+            #         )
+            #         data_gen_q.push(job_dir)
+            #     upload_status = self.generate_upload_status(data_gen_q, load_data_q)
+            #     finished = (
+            #         load_data_q.empty
+            #         and upload_status.confirmed_count_in_org
+            #         >= upload_status.target_count
+            #     )
+            #     print(upload_status._display(detailed=True))
+            #     print("Working directory", tempdir)
+            self._loop(template_path, tempdir, data_gen_q, load_data_q)
+
+            elapsed = format_duration(timedelta(seconds=time.time() - self.start_time))
 
             for (
                 char
@@ -179,40 +233,43 @@ class Snowfakery(BaseSalesforceApiTask):
                 time.sleep(0.10)
             print()
 
-    def _loop(self, template_path, tempdir):
-        generator_workers = []
-        upload_workers = []
+    from pysnooper import snoop
 
-        upload_status = self.generate_upload_status()
+    @snoop()
+    def _loop(self, template_path, tempdir, data_gen_q, load_data_q):
+        upload_status = self.generate_upload_status(data_gen_q, load_data_q)
 
         batches = generate_batches(
             self.num_records, BASE_BATCH_SIZE, self.max_batch_size
         )
 
         while not upload_status.done:
+            data_gen_q.tick()
             self.logger.info(
                 "\n********** PROGRESS *********",
             )
-            self.logger.info(upload_status._display(detailed=False))
-            upload_workers = self._spawn_transient_upload_workers(upload_workers)
-            generator_workers = [
-                worker for worker in generator_workers if worker.is_alive()
-            ]
+            self.logger.info(upload_status._display(detailed=True))
 
             if (
                 upload_status.max_needed_generators_to_fill_queue == 0
                 and not self.infinite_buffer
             ):
                 self.logger.info("WAITING FOR UPLOAD QUEUE TO CATCH UP")
-            else:
-                generator_workers = self._spawn_transient_generator_workers(
-                    generator_workers, upload_status, template_path, batches
-                )
-            self.logger.info(f"Generator Workers: {len(generator_workers)}")
-            self.logger.info(f"Upload Workers: {len(upload_workers)}")
-            self.logger.info(f"Queue size: {upload_status.upload_queue_backlog}")
-            for k, v in self.get_org_record_counts().items():
-                self.logger.info(f"      COUNT: {k}: {v:,}")
+            elif not data_gen_q.full:
+                batch_size, total = next(batches, (None, None))
+                if not batch_size:
+                    break
+
+                for i in range(data_gen_q.free_workers):
+                    self.job_counter += 1
+                    job_dir = self.generator_data_dir(
+                        self.job_counter, template_path, batch_size, tempdir
+                    )
+                    data_gen_q.push(job_dir)
+
+            # self.logger.info(f"Queue size: {upload_status.upload_queue_backlog}")
+            # for k, v in self.get_org_record_counts().items():
+            #     self.logger.info(f"      COUNT: {k}: {v:,}")
             self.logger.info(f"Working Directory: {tempdir}")
             if upload_status.sets_failed:
                 self.log_failures()
@@ -223,48 +280,50 @@ class Snowfakery(BaseSalesforceApiTask):
                 )
 
             time.sleep(3)
-            upload_status = self.generate_upload_status()
+            upload_status = self.generate_upload_status(data_gen_q, load_data_q)
 
-        workers = generator_workers + upload_workers
+    #     workers = generator_workers + upload_workers
 
-        while workers:
-            time.sleep(10)
-            workers = [worker for worker in workers if worker.is_alive()]
-            print(f"Waiting for {len(workers)} to finish up.")
-            for k, v in self.get_org_record_counts().items():
-                self.logger.info(f"      COUNT: {k}: {v:,}")
+    #     while workers:
+    #         time.sleep(10)
+    #         workers = [worker for worker in workers if worker.is_alive()]
+    #         print(f"Waiting for {len(workers)} to finish up.")
+    #         for k, v in self.get_org_record_counts().items():
+    #             self.logger.info(f"      COUNT: {k}: {v:,}")
 
-        self.logger.info(self.generate_upload_status()._display(detailed=True))
-        return upload_status
+    #     self.logger.info(self.generate_upload_status()._display(detailed=True))
+    #     return upload_status
 
     def log_failures(self):
+        return
+        # FIXME!!!!
         failures = self.failures_dir.glob("*/exception.txt")
         for failure in failures:
             text = failure.read_text()
             self.logger.info(f"Failure from worker: {failure}")
             self.logger.info(text)
 
-    def _spawn_transient_upload_workers(self, upload_workers):
-        upload_workers = [worker for worker in upload_workers if worker.is_alive()]
-        current_upload_workers = len(upload_workers)
-        if current_upload_workers < self.num_uploader_workers:
-            free_workers = self.num_uploader_workers - current_upload_workers
-            jobs_to_be_done = list(self.queue_for_loading_directory.glob("*_*"))
-            jobs_to_be_done.sort(key=lambda j: int(j.name.split("_")[0]))
+        # def _spawn_transient_upload_workers(self, upload_workers):
+        #     upload_workers = [worker for worker in upload_workers if worker.is_alive()]
+        #     current_upload_workers = len(upload_workers)
+        #     if current_upload_workers < self.num_uploader_workers:
+        #         free_workers = self.num_uploader_workers - current_upload_workers
+        #         jobs_to_be_done = list(self.queue_for_loading_directory.glob("*_*"))
+        #         jobs_to_be_done.sort(key=lambda j: int(j.name.split("_")[0]))
 
-            jobs_to_be_done = jobs_to_be_done[0:free_workers]
-            for job in jobs_to_be_done:
-                working_directory = shutil.move(str(job), str(self.loaders_path))
-                working_directory = Path(working_directory)
-                data_loader = self.data_loader_worker(working_directory)
-                # TODO: add an error trapping/reporting wrapper
-                # add an error trapping/reporting wrapper
-                data_loader.start()
+        #         jobs_to_be_done = jobs_to_be_done[0:free_workers]
+        #         for job in jobs_to_be_done:
+        #             working_directory = shutil.move(str(job), str(self.loaders_path))
+        #             working_directory = Path(working_directory)
+        #             data_loader = self.data_loader_opts(working_directory)
+        #             # TODO: add an error trapping/reporting wrapper
+        #             # add an error trapping/reporting wrapper
+        #             data_loader.start()
 
-                upload_workers.append(data_loader)
-        return upload_workers
+        #             upload_workers.append(data_loader)
+        #     return upload_workers
 
-    def data_loader_worker(self, working_dir: Path):
+    def data_loader_opts(self, working_dir: Path):
         mapping_file = working_dir / "temp_mapping.yml"
         database_file = working_dir / "generated_data.db"
         assert mapping_file.exists(), mapping_file
@@ -276,44 +335,47 @@ class Snowfakery(BaseSalesforceApiTask):
             "reset_oids": False,
             "database_url": database_url,
         }
-        return self._make_worker(
-            LoadData, options, working_dir, self.finished_directory
-        )
+        return options
 
-    def _spawn_transient_generator_workers(
-        self,
-        workers: T.Sequence,
-        upload_status: UploadStatus,
-        template_path: Path,
-        batches: T.Sequence,
-    ):
-        workers = [worker for worker in workers if worker.is_alive()]
+    # def _spawn_transient_generator_workers(
+    #     self,
+    #     workers: T.Sequence,
+    #     upload_status: UploadStatus,
+    #     template_path: Path,
+    #     batches: T.Sequence,
+    # ):
+    #     workers = [worker for worker in workers if worker.is_alive()]
 
-        # TODO: Check for errors!!!
-        total_needed_workers = upload_status.total_needed_generators
-        new_workers = total_needed_workers - len(workers)
+    #     # TODO: Check for errors!!!
+    #     total_needed_workers = upload_status.total_needed_generators
+    #     new_workers = total_needed_workers - len(workers)
 
-        for idx in range(new_workers):
-            self.job_counter += 1
-            batch_size, total = next(batches, (None, None))
-            if not batch_size:
-                break
+    #     for idx in range(new_workers):
+    #         self.job_counter += 1
+    #         batch_size, total = next(batches, (None, None))
+    #         if not batch_size:
+    #             break
 
-            data_generator = self.data_generator_worker(
-                batch_size,
-                template_path,
-                self.job_counter,
-            )
-            # add an error trapping/reporting wrapper
-            data_generator.start()
+    #         data_generator = self.data_generator_worker(
+    #             batch_size,
+    #             template_path,
+    #             self.job_counter,
+    #         )
+    #         # add an error trapping/reporting wrapper
+    #         data_generator.start()
 
-            workers.append(data_generator)
-        return workers
+    #         workers.append(data_generator)
+    #     return workers
 
-    def data_generator_worker(self, batch_size: int, template_path: Path, idx: int):
-        working_dir = self.generators_path / (str(idx) + "_" + str(batch_size))
-        shutil.copytree(template_path, working_dir)
+    def generator_data_dir(self, idx, template_path, batch_size, parent_dir):
+        data_dir = parent_dir / (str(idx) + "_" + str(batch_size))
+        shutil.copytree(template_path, data_dir)
+        return data_dir
 
+    def data_generator_opts(self, working_dir, *args, **kwargs):
+        name = Path(working_dir).name
+        parts = name.rsplit("_", 1)
+        batch_size = int(parts[-1])
         assert working_dir.exists()
         database_file = working_dir / "generated_data.db"
         assert database_file.exists()
@@ -321,38 +383,14 @@ class Snowfakery(BaseSalesforceApiTask):
         mapping_file = working_dir / "temp_mapping.yml"
         assert mapping_file.exists()
 
-        database_url = f"sqlite:///{database_file}"
-        options = {
+        return {
             "generator_yaml": str(self.recipe),
-            "database_url": database_url,
-            "working_directory": str(working_dir),
+            "database_url": f"sqlite:///{database_file}",
             "num_records": batch_size,
             "reset_oids": False,
             "continuation_file": f"{working_dir}/continuation.yml",
             "num_records_tablename": self.num_records_tablename,
         }
-        return self._make_worker(
-            GenerateDataFromYaml, options, working_dir, self.queue_for_loading_directory
-        )
-
-    def _make_worker(self, task_class, options, working_dir, output_dir):
-        try:
-            connected_app = self.project_config.keychain.get_service("connected_app")
-        except exc.ServiceNotConfigured:
-            connected_app = None
-
-        return ParallelWorker(
-            spawn_class=self.subtask_type,
-            task_class=task_class,
-            connected_app=connected_app,
-            org_config=self.org_config,
-            project_config=self.project_config,
-            task_options=options,
-            working_dir=working_dir,
-            output_dir=output_dir,
-            redirect_logging=not self.unified_logging,
-            failures_dir=self.failures_dir,
-        )
 
     def _invoke_subtask(
         self,
@@ -376,24 +414,28 @@ class Snowfakery(BaseSalesforceApiTask):
         idx_and_counts = (subdir.name.split("_") for subdir in dir.glob("*_*"))
         return sum(int(count) for (idx, count) in idx_and_counts)
 
-    def generate_upload_status(self):
+    def generate_upload_status(self, generator_q, loader_q):
+        def set_count_from_names(names):
+            return sum(int(name.split("_")[1]) for name in names)
+
         return UploadStatus(
             confirmed_count_in_org=self.get_org_record_count_for_sobject(),
             target_count=self.num_records,
-            sets_being_generated=self.sets_in_dir(self.generators_path),
-            sets_queued=self.sets_in_dir(self.queue_for_loading_directory),
+            sets_being_generated=set_count_from_names(generator_q.inprogress_jobs)
+            + set_count_from_names(generator_q.queued_jobs),
+            sets_queued=set_count_from_names(loader_q.queued_jobs),
             # note that these may count as already imported in the org
-            sets_being_loaded=self.sets_in_dir(self.loaders_path),
-            upload_queue_backlog=sum(
-                1 for dir in self.queue_for_loading_directory.glob("*_*")
-            ),
-            sets_finished=self.sets_in_dir(self.finished_directory),
+            sets_being_loaded=set_count_from_names(loader_q.inprogress_jobs),
+            upload_queue_backlog=len(loader_q.queued_jobs),
+            # TODO
+            sets_finished=-10,
             base_batch_size=BASE_BATCH_SIZE,  # FIXME
             user_max_num_uploader_workers=self.num_uploader_workers,
             user_max_num_generator_workers=self.num_generator_workers,
             max_batch_size=self.max_batch_size,
             elapsed_seconds=int(time.time() - self.start_time),
-            sets_failed=self.sets_in_dir(self.failures_dir),
+            # TODO
+            sets_failed=-10,
         )
 
     def get_org_record_count_for_sobject(self):
