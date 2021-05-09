@@ -189,7 +189,9 @@ class ParallelWorker:
         dct = self.worker_config.as_dict()
         self._validate_worker_config_is_simple(dct)
 
-        self.process = self.spawn_class(target=run_task_in_worker, args=[dct])
+        self.process = self.spawn_class(
+            target=run_task_in_worker, args=[dct], daemon=True
+        )
         self.process.start()
 
     def is_alive(self):
@@ -197,6 +199,16 @@ class ParallelWorker:
 
     def join(self):
         return self.process.join()
+
+    def terminate(self):
+        # Note that this will throw an exception for threads
+        # and should be used carefully for processes because
+        # they won't necesssarily cleanup tempdiirs and other
+        # resources.
+        self.process.terminate()
+
+    def __repr__(self):
+        return f"<Worker {self.worker_config.task_class.__name__} {self.worker_config.working_dir.name} Alive: {self.is_alive()}>"
 
 
 class SubprocessKeyChain(T.NamedTuple):

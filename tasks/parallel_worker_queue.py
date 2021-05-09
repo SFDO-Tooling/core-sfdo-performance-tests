@@ -66,9 +66,13 @@ class WorkerQueue:
 
     @property
     def full(self):
-        i_am_full = len(tuple(self.inbox_dir.iterdir())) >= self.queue_size
-        upstream_is_full = self.next_queue and self.next_queue.full
+        i_am_full = not self.free_space
+        upstream_is_full = bool(self.next_queue and self.next_queue.full)
         return i_am_full or upstream_is_full
+
+    @property
+    def free_space(self):
+        return max(self.free_workers + self.queue_size - len(self.queued_jobs), 0)
 
     @property
     def empty(self):
@@ -76,6 +80,11 @@ class WorkerQueue:
 
     def feeds(self, other_queue: "WorkerQueue"):
         self.next_queue = other_queue
+        try:
+            # cleanup, but not a problem if it fails
+            self.outbox_dir.rmdir()
+        except OSError:
+            pass
         self.outbox_dir = other_queue.inbox_dir
 
     @property
@@ -110,6 +119,7 @@ class WorkerQueue:
 
     @property
     def inprogress_job_dirs(self):
+        # print("QQQ", list(self.inprogress_dir.iterdir()), str(self.inprogress_dir))
         return list(self.inprogress_dir.iterdir())
 
     @property
@@ -123,6 +133,14 @@ class WorkerQueue:
     @property
     def outbox_jobs(self):
         return [job.name for job in self.outbox_job_dirs]
+
+    @property
+    def failed_job_dirs(self):
+        return list(self.failures_dir.iterdir()) if self.failures_dir.exists() else []
+
+    @property
+    def failed_jobs(self):
+        return [job.name for job in self.failed_job_dirs]
 
     def _start_job(self, job_dir: Path):
         options = self._get_job_options(job_dir)
@@ -153,6 +171,14 @@ class WorkerQueue:
 
     def _queue_job(self, job_dir: Path):
         job_dir = shutil.move(job_dir, self.inbox_dir)
+
+    def terminate_all(self):
+        for worker in self.workers:
+            if worker.is_alive():
+                try:
+                    worker.terminate()
+                except Exception as e:
+                    logger.warn(f"Could not terminate worker: {e}")
 
     def tick(self):
         live_workers = []
