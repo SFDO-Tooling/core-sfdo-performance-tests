@@ -115,8 +115,7 @@
             probability: 60%
             pick: New
     AccountId:
-      reference:
-        Account
+      reference: Account
 
 - object: Account
   count: 50
@@ -125,9 +124,8 @@
     Name:
       fake: company
   friends:
-  - object: ContentVersion
-    just_once: True
-    fields:
+    - object: ContentVersion
+      fields:
         Title: Photo
         PathOnClient: profile.png
         VersionData:
@@ -138,8 +136,8 @@
         FirstPublishLocationId:
           reference: Contact
 
-  - object: ContentVersion
-    fields:
+    - object: ContentVersion
+      fields:
         Title: PDF
         PathOnClient: example.pdf
         VersionData:
