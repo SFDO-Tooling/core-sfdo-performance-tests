@@ -319,9 +319,18 @@ class Snowfakery(BaseSalesforceApiTask):
     ):
         batch_size = BASE_BATCH_SIZE
 
-        batches = generate_batches(
-            self.num_records, BASE_BATCH_SIZE, self.max_batch_size
-        )
+        record_count = False
+
+        while org_record_counts_thread.is_alive() and not record_count:
+            self.logger.info("Waiting for org record report")
+            record_count = org_record_counts_thread.main_sobject_count
+            time.sleep(1)
+
+        goal_records = self.num_records - record_count
+
+        self.logger.info(f"Org has {record_count:,}. Generating {goal_records:,}.")
+
+        batches = generate_batches(goal_records, BASE_BATCH_SIZE, self.max_batch_size)
         for i in range(10 ** 10):
             upload_status = self._report_status(
                 data_gen_q, load_data_q, batch_size, org_record_counts_thread
@@ -387,7 +396,9 @@ class Snowfakery(BaseSalesforceApiTask):
                 self.job_counter += 1
                 batch_size, total = next(batches, (None, None))
                 if not batch_size:
-                    self.logger.info("All scheduled batches uploaded")
+                    self.logger.info(
+                        "All scheduled batches generated and being uploaded"
+                    )
                     break
                 job_dir = self.generator_data_dir(
                     self.job_counter, template_path, batch_size, tempdir
