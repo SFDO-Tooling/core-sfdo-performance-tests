@@ -54,8 +54,8 @@ Insert 200 Pledged Opportunities
         ...  CloseDate=${date}
     ${numobjects}=  Get Length     ${objects}
     FOR     ${index}   IN RANGE   ${numobjects}
-        ${object}=  Set Variable    @{objects}[${index}]
-        ${account}=     Set Variable    @{accounts}[${index}]
+        ${object}=  Set Variable    ${objects}[${index}]
+        ${account}=     Set Variable    ${accounts}[${index}]
         ${account_id}=  Set Variable    ${account}[Id]
         set to dictionary   ${object}   AccountId   ${account_id}
     END
