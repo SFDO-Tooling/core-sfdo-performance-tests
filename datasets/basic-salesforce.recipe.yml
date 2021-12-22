@@ -1,6 +1,3 @@
-- plugin: datasets.plugins.base64.Base64
-- plugin: datasets.plugins.file.File
-
 # Hard-coded and just_once objects
 - object: Account
   just_once: True
@@ -25,7 +22,7 @@
     Name:
       fake: company
     Description:
-      fake: catch_phrase
+      fake: CatchPhrase
     BillingStreet:
       fake: street_address
     BillingCity:
@@ -62,14 +59,14 @@
 
 - object: Contact
   fields:
-    Type__c:
-      random_choice:
-        - choice:
-            probability: 50%
-            pick: Volunteer
-        - choice:
-            probability: 50%
-            pick: Staff Member
+    # Type__c:
+    #   random_choice:
+    #     - choice:
+    #         probability: 50%
+    #         pick: Volunteer
+    #     - choice:
+    #         probability: 50%
+    #         pick: Staff Member
     Salutation:
       fake: prefix
     FirstName:
@@ -123,27 +120,27 @@
   fields:
     Name:
       fake: company
-  friends:
-    - object: ContentVersion
-      fields:
-        Title: Photo
-        PathOnClient: profile.png
-        VersionData:
-          Base64.encode:
-            - File.file_data:
-                encoding: binary
-                file: profile.png
-        FirstPublishLocationId:
-          reference: Contact
+  # friends:
+  #   - object: ContentVersion
+  #     fields:
+  #       Title: Photo
+  #       PathOnClient: profile.png
+  #       VersionData:
+  #         Base64.encode:
+  #           - File.file_data:
+  #               encoding: binary
+  #               file: profile.png
+  #       FirstPublishLocationId:
+  #         reference: Contact
 
-    - object: ContentVersion
-      fields:
-        Title: PDF
-        PathOnClient: example.pdf
-        VersionData:
-          Base64.encode:
-            - File.file_data:
-                encoding: binary
-                file: example.pdf
-        FirstPublishLocationId:
-          reference: Account
+  #   - object: ContentVersion
+  #     fields:
+  #       Title: PDF
+  #       PathOnClient: example.pdf
+  #       VersionData:
+  #         Base64.encode:
+  #           - File.file_data:
+  #               encoding: binary
+  #               file: example.pdf
+  #       FirstPublishLocationId:
+  #         reference: Account

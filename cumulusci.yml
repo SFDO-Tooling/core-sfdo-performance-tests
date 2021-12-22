@@ -16,9 +16,7 @@ tasks:
             suites: robot/core-sfdo-performance-tests
             test: Perftest - Insert 200 Contacts
 
-
     snowfakery:
-        class_path: tasks.snowscale.Snowfakery
         options:
             num_records: 25_000
             recipe: datasets/basic-salesforce.recipe.yml
@@ -55,7 +53,7 @@ flows:
 
     setup_ldv_org:
         steps:
-            1: 
+            1:
                 flow: setup_org_common
 
             2:
@@ -85,7 +83,7 @@ flows:
             3:
                 task: snowfakery
                 options:
-                    num_records: 30_000_000
+                    num_records: 25_000_000
 
             4:
                 task: test_performance_demo
