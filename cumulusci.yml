@@ -18,10 +18,7 @@ tasks:
 
     snowfakery:
         options:
-            num_records: 25_000
             recipe: datasets/basic-salesforce.recipe.yml
-            num_records_tablename: Account
-            subtask_type: process
 
     disable_duplicate_rules:
         class_path: cumulusci.tasks.metadata_etl.SetDuplicateRuleStatus
@@ -83,7 +80,8 @@ flows:
             3:
                 task: snowfakery
                 options:
-                    num_records: 25_000_000
+                    run_until_recipe_repeated: 10_000_000
+                    num_processes: 12
 
             4:
                 task: test_performance_demo
