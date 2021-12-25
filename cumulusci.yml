@@ -29,9 +29,9 @@ tasks:
     delete_data:
         options:
             objects:
+                - Opportunity
                 - Account
                 - Contact
-                - Opportunity
                 - ContentDocument
             ignore_row_errors: True
             hardDelete: True
@@ -75,8 +75,8 @@ flows:
 
     test_performance_LDV:
         steps:
-            2:
-                task: delete_data
+            # 2:
+            #     task: delete_data
             3:
                 task: snowfakery
                 options:
