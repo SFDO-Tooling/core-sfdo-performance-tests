@@ -1,8 +1,7 @@
 # Highly randomized objects
 - object: Account
   fields:
-    Name:
-      fake: company
+    Name: ${{fake.company}} ${{unique_id}}
     Description:
       fake: CatchPhrase
     BillingStreet:
@@ -53,8 +52,7 @@
       fake: prefix
     FirstName:
       fake: first_name
-    LastName:
-      fake: last_name
+    LastName: ${{fake.last_name}} ${{unique_id}}
     Email:
       fake: email
     Phone:
@@ -97,4 +95,3 @@
       reference: Account
     ContactId:
       reference: Contact
-

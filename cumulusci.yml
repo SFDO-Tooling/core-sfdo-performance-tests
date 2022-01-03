@@ -75,8 +75,8 @@ flows:
 
     test_performance_LDV:
         steps:
-            # 2:
-            #     task: delete_data
+            2:
+                task: delete_data
             3:
                 task: snowfakery
                 options:
